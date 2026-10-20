@@ -7,6 +7,8 @@ the common math functions.
 """
 from __future__ import annotations
 
+import bisect
+
 import math
 import re
 
@@ -400,8 +402,13 @@ class Series:
 
 
 class EvalContext:
-    def __init__(self, eval_ms, start_ms, end_ms, step_ms):
+    """One evaluation instant. A range query threads a shared `cache` through
+    every step so the series list and each selector's sample window are read
+    from SQLite once instead of once per step."""
+
+    def __init__(self, eval_ms, start_ms, end_ms, step_ms, cache=None):
         self.eval_ms, self.start_ms, self.end_ms, self.step_ms = eval_ms, start_ms, end_ms, step_ms
+        self.cache = cache
 
 
 _series_cache = {"stamp": None, "rows": []}
@@ -440,13 +447,22 @@ def match_labels(labels: dict, matchers) -> bool:
     return True
 
 
-def select_series(metric: str, matchers) -> list[dict]:
+def _selector_key(metric: str, matchers) -> tuple:
+    return (metric, tuple((m[0], m[1], m[2]) for m in (matchers or [])))
+
+
+def select_series(metric: str, matchers, cache: dict | None = None) -> list[dict]:
+    key = ("series", _selector_key(metric, matchers))
+    if cache is not None and key in cache:
+        return cache[key]
     out = []
     for s in all_series():
         if metric and s["labels"].get("__name__") != metric:
             continue
         if match_labels(s["labels"], matchers):
             out.append(s)
+    if cache is not None:
+        cache[key] = out
     return out
 
 
@@ -477,10 +493,45 @@ def _resolve_time(node_ctx_ms: int, at_ms, start_ms, end_ms) -> int:
     return at_ms
 
 
+def _prefetched(sel: Selector, ctx: EvalContext):
+    """Read one selector's whole window once, so a range query does not hit
+    SQLite once per step. Returns (meta_by_id, {sid: (ts_list, value_list)})."""
+    key = ("window", _selector_key(sel.metric, sel.matchers), sel.offset_ms, sel.range_ms or 0)
+    hit = ctx.cache.get(key)
+    if hit is not None:
+        return hit
+    series_meta = select_series(sel.metric, sel.matchers, ctx.cache)
+    meta_by_id = {s["id"]: s for s in series_meta}
+    rng = sel.range_ms or 0
+    first = _resolve_time(ctx.start_ms, sel.at_ms, ctx.start_ms, ctx.end_ms) - sel.offset_ms - rng
+    last = _resolve_time(ctx.end_ms, sel.at_ms, ctx.start_ms, ctx.end_ms) - sel.offset_ms
+    data = read_samples(meta_by_id.keys(), int(first // 1000), int(last // 1000) + 1)
+    packed = {}
+    for sid, values in data.items():
+        packed[sid] = ([ts for ts, _ in values], [v for _, v in values])
+    entry = (meta_by_id, packed)
+    ctx.cache[key] = entry
+    return entry
+
+
 def eval_selector(sel: Selector, ctx: EvalContext, want_matrix: bool):
     base = _resolve_time(ctx.eval_ms, sel.at_ms, ctx.start_ms, ctx.end_ms)
     base -= sel.offset_ms
-    series_meta = select_series(sel.metric, sel.matchers)
+    if ctx.cache is not None and (want_matrix or sel.range_ms):
+        rng = sel.range_ms or 0
+        meta_by_id, packed = _prefetched(sel, ctx)
+        lo = int((base - rng) // 1000)
+        hi = int(base // 1000)
+        out = []
+        for sid, (stamps, values) in packed.items():
+            i = bisect.bisect_left(stamps, lo)
+            j = bisect.bisect_right(stamps, hi)
+            if i >= j:
+                continue
+            out.append(Series(dict(meta_by_id[sid]["labels"]), [(stamps[k] * 1000, values[k]) for k in range(i, j)]))
+        return out
+
+    series_meta = select_series(sel.metric, sel.matchers, ctx.cache)
     if not series_meta:
         return []
     meta_by_id = {s["id"]: s for s in series_meta}
@@ -1057,9 +1108,10 @@ def query_range(expr: str, start_ms: int, end_ms: int, step_ms: int):
         points = int((end_ms - start_ms) // step_ms) + 1
     merged: dict[tuple, dict] = {}
     base_labels: dict[tuple, dict] = {}
+    cache: dict = {}
     for i in range(points):
         t = start_ms + i * step_ms
-        ctx = EvalContext(t, start_ms, end_ms, step_ms)
+        ctx = EvalContext(t, start_ms, end_ms, step_ms, cache)
         result = eval_expr(ast, ctx)
         if isinstance(result, (int, float)):
             result = [Sample({}, float(result))]

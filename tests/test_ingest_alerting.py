@@ -170,5 +170,60 @@ class SyntheticTests(unittest.TestCase):
         self.assertTrue(page["components"])
 
 
+class ValueFormatTests(unittest.TestCase):
+    """Alert values are numbers; people need units. Both are exposed."""
+
+    @classmethod
+    def setUpClass(cls):
+        db.reset()
+
+    def test_formats(self):
+        from craft.alerting import format_value
+
+        self.assertEqual(format_value(-83146879319.54, "bytes"), "−77.4 GiB")
+        self.assertEqual(format_value(1536, "bytes"), "1.5 KiB")
+        self.assertEqual(format_value(0.0612, "ratio"), "6.12%")
+        self.assertEqual(format_value(0.0612, "percent"), "0.06%")
+        self.assertEqual(format_value(4123, "seconds"), "68.7m")
+        self.assertEqual(format_value(123456789, ""), "123.46M")
+        self.assertEqual(format_value(0, ""), "0")
+        self.assertEqual(format_value(None, "bytes"), "—")
+
+    def test_projection_note(self):
+        from craft.alerting import value_note
+
+        expr = "predict_linear(node_filesystem_free_bytes[30m], 4*3600) < 0"
+        self.assertIsNotNone(value_note(expr, -83146879319.54, "bytes"))
+        self.assertIsNone(value_note(expr, 1.2e9, "bytes"), "a positive projection is not news")
+        self.assertIsNone(value_note("sum(rate(http_requests_total[5m]))", -1), "not a projection")
+
+    def test_rule_roundtrip_carries_the_unit(self):
+        rule_id = alerting.upsert_rule({
+            "name": "BytesRule", "expr": "node_filesystem_free_bytes < 1e12",
+            "for": 0, "severity": "warning", "format": "bytes",
+        })
+        try:
+            rule = [r for r in alerting.list_rules() if r["id"] == rule_id][0]
+            self.assertEqual(rule["format"], "bytes")
+            alerting.evaluate()
+            rows = [a for a in alerting.list_alerts() if a["name"] == "BytesRule"]
+            if rows:  # depends on whether the seeded metric matches right now
+                self.assertEqual(rows[0]["format"], "bytes")
+                self.assertIn("GiB", rows[0]["value_display"])
+            # an unknown unit must not be stored
+            alerting.upsert_rule({"name": "BytesRule", "expr": "node_filesystem_free_bytes < 1e12",
+                                  "for": 0, "severity": "warning", "format": "furlongs"})
+            rule = [r for r in alerting.list_rules() if r["id"] == rule_id][0]
+            self.assertEqual(rule["format"], "")
+        finally:
+            alerting.delete_rule(rule_id)
+
+    def test_default_disk_rule_declares_bytes(self):
+        alerting.seed_defaults()
+        disk = [r for r in alerting.list_rules() if r["name"] == "DiskWillFillIn4Hours"]
+        self.assertTrue(disk)
+        self.assertEqual(disk[0]["format"], "bytes")
+
+
 if __name__ == "__main__":
     unittest.main()

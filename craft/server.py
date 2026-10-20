@@ -980,6 +980,11 @@ class Collector:
 
 
 def serve(port: int = 8787, host: str = "0.0.0.0", autoseed: bool = True):
+    try:
+        # default rules, plus the idempotent backfills they carry
+        alerting.seed_defaults()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[rules] skipped defaults: {exc}")
     if autoseed:
         try:
             seed.seed(f"http://127.0.0.1:{port}")

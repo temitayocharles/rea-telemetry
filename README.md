@@ -23,12 +23,12 @@ an active SEV2 incident) in about four seconds, so the UI is never an empty shel
 |---|---|---|
 | **Overview** | Grafana home | Golden signals, service RED table, live incident banner, budgets, on-call, status |
 | **Metrics** | Prometheus + Grafana Explore | A real PromQL engine: selectors, `rate`, `histogram_quantile`, aggregations, vector matching, `predict_linear`, label functions; instant + range, series table, label browser, scrape targets |
-| **Dashboards** | Grafana | Folders, panels (timeseries, stat, gauge, table, bargauge, heatmap), template variables, grid layout, panel editor with live preview, JSON export |
+| **Dashboards** | Grafana | Folders, panels (timeseries, stat, gauge, table, bargauge, heatmap), template variables, drag-and-drop 24-column grid with live ghost preview and gravity compaction, drag-to-resize, Tidy, panel editor with live preview, JSON export |
 | **Logs** | Loki + Grafana Logs | LogQL stream selectors, line filters (`\|=`, `!=`, `\|~`, `!~`), label filters, volume histogram, per-level filtering, expandable rows, live tail |
 | **Search** | OpenSearch / Kibana Discover | Index-pattern exploration, hit histogram, field facets with counts, free-text to LogQL translation, saved searches, raw document viewer |
 | **Traces** | Jaeger / Tempo | Trace search by service/status/operation/duration, latency scatter, service map derived from span parentage, full waterfall with span attributes, slowest-first |
 | **Errors** | Sentry | Fingerprinted issue groups, stack traces with source lines, affected users, releases, hourly sparklines, resolve/ignore/assign |
-| **Alerting** | Prometheus rules + Alertmanager | PromQL rules with `for` semantics (pending → firing), grouping, acknowledgement, silences with matchers, receivers, delivery log, rule editor with expression test |
+| **Alerting** | Prometheus rules + Alertmanager | PromQL rules with `for` semantics (pending → firing), grouping, per-rule value units (bytes, %, seconds) so alerts read "−11.5 GiB" instead of "−12345678901", acknowledgement, silences with matchers, receivers, delivery log, rule editor with expression test |
 | **On-call** | PagerDuty schedules | Weekly, daily and follow-the-sun rotations, computed handoffs, escalation ladder, manual pages, delivery log |
 | **Incidents** | PagerDuty / incident.io | Declare (SEV1–4), roles, responder roster, status transitions, timestamped timeline, blameless postmortem with action items |
 | **SLOs** | Nobl9 / Sloth | SLI/total expressions, error budgets, 1h/6h/24h burn rates, projected exhaustion, breach status |
@@ -167,6 +167,10 @@ craft export --out snapshot.json
 - **SLOs.** Good and total expressions are sampled across the window. For windows wider than the
   rate selector, selectors are widened to the step so a 30-day SLO integrates the whole period
   instead of over-weighting the last incident.
+- **Layout.** A small pure-JS grid engine (`craft/web/js/grid.js`, ~160 lines) implements the
+  same 24-column model Grafana uses: `{x, y, w, h}` per panel, collision resolution that pushes
+  occupants down, and upward gravity so panels never leave holes. Drag a panel by its title bar,
+  resize from the corner; both show a dashed ghost of the landing spot and save with the dashboard.
 - **UI.** Hand-written SVG charts with crosshair tooltips, resize redraws, and no dependencies.
   Hash routing, keyboard palette (<kbd>⌘K</kbd>), shared time-range state.
 
@@ -196,7 +200,7 @@ have dashboards, alerts, traces, error tracking, and error budgets.
 ## Development
 
 ```bash
-make test      # 51 tests, stdlib unittest, no pytest required
+make test      # 56 tests, stdlib unittest, no pytest required
 make run       # server with demo data
 make seed      # regenerate demo data
 make docker
@@ -206,7 +210,7 @@ make docker
 craft/            engine: storage, PromQL, LogQL, alerting, incidents, SLOs, synthetics, API
 craft/server.py   HTTP API + collector loop
 craft/seed.py     7-day demo environment generator
-craft/web/        the console (index.html, css/app.css, js/apps/*)
+craft/web/        the console (index.html, css/app.css, js/apps/*, js/grid.js)
 tests/            unit + end-to-end API tests
 docs/             architecture, compatibility, API reference
 ```

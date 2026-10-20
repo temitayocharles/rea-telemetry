@@ -115,7 +115,7 @@ Response: `{"streams":[{"stream":{"service":…},"values":[[ts,"line"],…]}]}`.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/alerts` | `state=firing\|pending\|resolved`; includes `last_eval` |
+| GET | `/api/alerts` | `state=firing\|pending\|resolved`; includes `last_eval`. Each row carries `value` (raw float), `value_display` (rendered in the rule's unit), `value_note` (why a projection is negative) and `format` |
 | POST | `/api/alerts/evaluate` | Evaluate all rules now, returns transitions |
 | POST | `/api/alerts/<id>/ack` | `{"by":"name"}` |
 | POST | `/api/alerts/<id>/incident` | Promote to an incident |
@@ -130,11 +130,14 @@ Response: `{"streams":[{"stream":{"service":…},"values":[[ts,"line"],…]}]}`.
 | GET | `/api/oncall` | Current on-call per schedule |
 | GET/POST | `/api/schedules` | Rotations and members |
 
+`format` is one of `""` (raw number), `bytes`, `percent`, `ratio`, `seconds`, `number`. It only
+changes how the value is rendered — the stored value is always the raw result of the expression.
+
 Rule body:
 
 ```json
 {"name":"HighErrorRate","expr":"sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (service) / sum(rate(http_requests_total[5m])) by (service) > 0.05",
- "for_s":120,"severity":"critical","summary":"5xx rate above 5%","service":"","enabled":true}
+ "for":120,"severity":"critical","summary":"5xx rate above 5%","format":"ratio","enabled":true}
 ```
 
 ---

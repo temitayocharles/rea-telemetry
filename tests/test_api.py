@@ -115,6 +115,15 @@ class APITests(unittest.TestCase):
         self.assertTrue(alerts["alerts"])
         created, _ = self.call("/api/rules", "POST", {"name": "APITest", "expr": "sum(up) > 0", "for": 0, "severity": "info"})
         self.assertIn("id", created)
+        for alert in alerts["alerts"]:
+            self.assertIsInstance(alert["value_display"], str)
+            self.assertIn("format", alert)
+        disk = [a for a in alerts["alerts"] if a["name"] == "DiskWillFillIn4Hours"]
+        if disk:  # seeded demo data
+            self.assertEqual(disk[0]["format"], "bytes")
+            self.assertRegex(disk[0]["value_display"], r"(B|KiB|MiB|GiB|TiB)$")
+            if (disk[0]["value"] or 0) < 0:
+                self.assertTrue(disk[0]["value_note"], "a negative projection must explain itself")
         preview, _ = self.call("/api/rules/preview", "POST", {"expr": "sum(up)"})
         self.assertTrue(preview["ok"])
         _ = self.call(f"/api/rules/{created['id']}", "DELETE")

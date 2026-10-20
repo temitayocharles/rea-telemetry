@@ -67,7 +67,7 @@ export async function render(root, ctx) {
     if (!count) { resultHost.appendChild(empty("No series", "Try loosening label matchers or widening the range.")); return; }
     const chartEl = h("div", {});
     resultHost.appendChild(h("div", { class: "panel", style: { marginBottom: "12px" } }, h("div", { class: "panel-body" }, chartEl)));
-    if (chartCleanup) chartCleanup();
+    chartCleanup?.stop?.(); // mount() returns { redraw, stop }
     const series = data.result.map((s, i) => ({
       label: labelOf(s.metric),
       values: s.values,
@@ -255,5 +255,5 @@ export async function render(root, ctx) {
 
   switchTab("graph");
   run();
-  ctx.setCleanup(() => { chartCleanup?.(); });
+  ctx.setCleanup(() => { chartCleanup?.stop?.(); });
 }

@@ -272,11 +272,37 @@ table.data .num { text-align: right; }
 .metric-item.active { background: var(--accent-dim); }
 .metric-item.active .m-name { color: var(--accent); }
 .result-table { max-height: 340px; overflow: auto; }
-.dash-grid { display: grid; grid-template-columns: repeat(24, 1fr); gap: 10px; grid-auto-rows: 30px; }
-.dash-panel { background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--radius); display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.dash-grid {
+  display: grid; grid-template-columns: repeat(24, 1fr); gap: 10px; grid-auto-rows: 30px;
+  position: relative; align-content: start;
+  min-height: calc(var(--grid-rows, 0) * 40px - 10px);
+}
+.dash-grid.narrow { display: flex; flex-direction: column; min-height: 0; gap: 10px; }
+.dash-panel { background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--radius); display: flex; flex-direction: column; overflow: hidden; min-height: 0; position: relative; }
 .dash-panel:hover { border-color: var(--line); }
 .dash-panel .dp-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px 3px; font-size: 12px; font-weight: 550; flex: 0 0 auto; }
 .dash-panel .dp-head .muted { font-size: 10.5px; font-weight: 400; margin-left: auto; }
+.dash-panel .dp-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* edit mode: grab to move, corner to resize */
+.dash-panel .dp-head.grab { cursor: grab; user-select: none; }
+.dash-panel .dp-head.grab:active { cursor: grabbing; }
+.dash-grid.interacting, .dash-grid.interacting * { user-select: none; }
+.dash-grid.interacting .dash-panel { transition: none; }
+.dash-panel.editable { border-color: #2c343d; }
+.dash-panel.editable:hover { border-color: #3c4a3c; }
+.dash-panel.dragging { opacity: 0.45; }
+.dash-panel.resizing { border-color: var(--accent); }
+.dash-panel .dp-resize {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 3;
+  background: linear-gradient(135deg, transparent 46%, #3b4a3b 46%, #3b4a3b 54%, transparent 54%, transparent 68%, #3b4a3b 68%, #3b4a3b 76%, transparent 76%);
+}
+.dash-panel .dp-resize:hover { background-color: rgba(154, 230, 110, 0.12); }
+.dp-ghost {
+  position: absolute; pointer-events: none; z-index: 1; border-radius: var(--radius);
+  border: 1px dashed var(--accent); background: rgba(154, 230, 110, 0.07);
+  transition: left 60ms linear, top 60ms linear, width 60ms linear, height 60ms linear;
+}
 .dash-panel .dp-body { flex: 1; min-height: 0; padding: 2px 8px 8px; position: relative; }
 .dash-panel.kpi-like .dp-body { display: grid; place-items: center; }
 .panel-stat { font: 600 30px var(--mono); letter-spacing: -1px; }

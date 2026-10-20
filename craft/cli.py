@@ -183,7 +183,10 @@ def cmd_alerts(args):
     rows = []
     for a in alerting.list_alerts():
         tone = "crit" if a["state"] == "firing" else "warn" if a["state"] == "pending" else "ok"
-        rows.append([c(a["state"], tone), a["severity"], a["name"], " ".join(f"{k}={v}" for k, v in a["labels"].items()), str(a["value"])[:12]])
+        shown = a.get("value_display") or fmtnum(a["value"])
+        if a.get("value_note"):
+            shown = f"{shown} ({a['value_note'].split(' — ')[0]})"
+        rows.append([c(a["state"], tone), a["severity"], a["name"], " ".join(f"{k}={v}" for k, v in a["labels"].items()), shown])
     if not rows:
         return print(c("no alerts", "ok"))
     table(["state", "severity", "alert", "labels", "value"], rows)

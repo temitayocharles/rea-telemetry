@@ -119,7 +119,9 @@ craft traces 4f2c9a1b7e3d4c5f8a9b0c1d2e3f4a5b
 craft alerts [--evaluate] [--ack ID --by NAME]
 ```
 
-Lists alert instances with state, value, labels and duration. `--evaluate` runs every rule now
+Lists alert instances with state, severity, name, labels and value. Values are rendered in the
+unit each rule declares (`bytes`, `ratio`, `seconds`, …), and a projection that has already gone
+negative says so: `−11.5 GiB (projected past zero)`. `--json` includes the raw float. `--evaluate` runs every rule now
 (the collector does this every 15 s anyway) and prints the transitions.
 
 ### `rules`

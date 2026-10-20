@@ -93,7 +93,7 @@ def _series_sum(expr: str, start_ms: int, end_ms: int, step_ms: int) -> dict[int
     return totals
 
 
-def compute(slo: dict, points: int = 120) -> dict:
+def compute(slo: dict, points: int = 60) -> dict:
     window_days = slo["window_days"]
     now_ms = db.now() * 1000
     start_ms = now_ms - window_days * 86400 * 1000

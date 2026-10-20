@@ -49,7 +49,9 @@ export async function render(root, ctx) {
     h("td", {},
       h("div", { class: "chips" }, Object.entries(a.labels).map(([k, v]) => h("span", { class: "chip" }, `${k}=${v}`))),
       h("div", { class: "hint mono", style: { marginTop: "4px" } }, a.expr)),
-    h("td", { class: "num" }, a.value !== null ? num(a.value, 3) : "—"),
+    h("td", { class: "num", title: a.value !== null ? `raw ${a.value}` : "" },
+      h("div", {}, a.value_display ?? (a.value !== null ? num(a.value, 3) : "—")),
+      a.value_note ? h("div", { class: "hint", style: { maxWidth: "150px", whiteSpace: "normal", textAlign: "right" } }, a.value_note) : null),
     h("td", { class: "num" }, dur(a.duration_s)),
     h("td", { class: "num muted" }, ago(a.last_eval)),
     h("td", {}, h("div", { class: "row", style: { gap: "4px", justifyContent: "flex-end" } },
@@ -173,6 +175,9 @@ function openRule(ctx, rule) {
   const summaryIn = h("input", { class: "input", value: rule?.summary || "" });
   const groupIn = h("input", { class: "input", value: rule?.group || "default" });
   const runbookIn = h("input", { class: "input", value: rule?.runbook || "" });
+  const formatIn = h("select", { class: "select" },
+    ["", "bytes", "percent", "ratio", "seconds", "number"].map((f) =>
+      h("option", { value: f, selected: (rule?.format || "") === f }, f || "raw number")));
   const preview = h("div", {});
   const m = modal({
     title: rule ? "Edit alert rule" : "New alert rule",
@@ -180,7 +185,7 @@ function openRule(ctx, rule) {
     body: [
       h("div", { class: "form-grid" }, formField("Name", nameIn), formField("Severity", sevIn), formField("For (seconds)", forIn), formField("Group", groupIn)),
       formField("PromQL expression", exprIn, "A non-empty result means the alert is active. Values are attached to the alert."),
-      h("div", { class: "form-grid" }, formField("Summary", summaryIn), formField("Runbook URL", runbookIn)),
+      h("div", { class: "form-grid" }, formField("Summary", summaryIn), formField("Runbook URL", runbookIn), formField("Value unit", formatIn, "How the raw result is shown in the alert list.")),
       h("div", { class: "row" }, h("button", { class: "btn sm", onClick: async () => {
         clear(preview);
         const res = await ctx.api.previewRule(exprIn.value);
@@ -195,7 +200,7 @@ function openRule(ctx, rule) {
       h("button", { class: "btn primary", onClick: async () => {
         if (!nameIn.value.trim()) return toast("Name is required", "err");
         try {
-          await ctx.api.saveRule({ name: nameIn.value.trim(), expr: exprIn.value, for: Number(forIn.value), severity: sevIn.value, summary: summaryIn.value, group: groupIn.value, runbook: runbookIn.value, enabled: true });
+          await ctx.api.saveRule({ name: nameIn.value.trim(), expr: exprIn.value, for: Number(forIn.value), severity: sevIn.value, summary: summaryIn.value, group: groupIn.value, runbook: runbookIn.value, format: formatIn.value, enabled: true });
           toast("Rule saved");
           m.close();
           ctx.refresh();

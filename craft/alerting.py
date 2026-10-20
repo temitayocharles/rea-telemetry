@@ -38,6 +38,103 @@ def save_receivers(items: list[dict]) -> None:
 # --------------------------------------------------------------------------
 # Rules
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Value presentation
+# --------------------------------------------------------------------------
+# A rule's raw value is whatever its expression returned, which is precise but
+# often unreadable ("-83146879319.54"). `format` names the unit so the alert
+# list can say "−77.4 GiB" without hiding the number.
+FORMATS = ("", "bytes", "percent", "ratio", "seconds", "number")
+
+
+def _human_bytes(value: float, digits: int = 1) -> str:
+    sign = "−" if value < 0 else ""
+    n = abs(float(value))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if n < 1024 or unit == "PiB":
+            if unit == "B":
+                return f"{sign}{n:.0f} {unit}"
+            return f"{sign}{n:.{digits}f} {unit}"
+        n /= 1024
+    return f"{sign}{n:.{digits}f} PiB"
+
+
+def _human_seconds(value: float) -> str:
+    n = abs(float(value))
+    sign = "−" if value < 0 else ""
+    if n < 1:
+        return f"{sign}{n * 1000:.0f}ms"
+    if n < 90:
+        return f"{sign}{n:.1f}s"
+    if n < 5400:
+        return f"{sign}{n / 60:.1f}m"
+    if n < 172800:
+        return f"{sign}{n / 3600:.1f}h"
+    return f"{sign}{n / 86400:.1f}d"
+
+
+def format_value(value, fmt: str = "") -> str:
+    """Render an alert value in the unit the rule declares."""
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if v != v:
+        return "NaN"
+    if v in (float("inf"), float("-inf")):
+        return "∞" if v > 0 else "−∞"
+    fmt = (fmt or "").strip()
+    if fmt == "bytes":
+        return _human_bytes(v)
+    if fmt == "percent":
+        return f"{v:.2f}%"
+    if fmt == "ratio":
+        return f"{v * 100:.2f}%"
+    if fmt == "seconds":
+        return _human_seconds(v)
+    if fmt == "number" or fmt == "":
+        a = abs(v)
+        if a >= 1e9:
+            return f"{v / 1e9:,.2f}B"
+        if a >= 1e6:
+            return f"{v / 1e6:,.2f}M"
+        if a >= 1e4:
+            return f"{v / 1e3:,.1f}k"
+        if a >= 1000:
+            return f"{v:,.0f}"
+        if a >= 1:
+            return f"{v:,.3f}".rstrip("0").rstrip(".")
+        if a == 0:
+            return "0"
+        if a < 0.001:
+            return f"{v:.2e}"
+        return f"{v:.4f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+PROJECTION = re.compile(r"\b(predict_linear|deriv)\s*\(", re.I)
+
+
+def value_note(expr: str, value, fmt: str = "") -> str | None:
+    """Explain a projection that has already gone past its threshold.
+
+    `predict_linear(free_bytes[30m], 4*3600)` answers "how much free space is
+    left in four hours". When the disk is already nearly full that is a large
+    negative number, which is correct but reads like a glitch, so say so.
+    """
+    if value is None or not PROJECTION.search(expr or ""):
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v >= 0:
+        return None
+    return "projected past zero — the limit is already crossed"
+
+
 def list_rules() -> list[dict]:
     rows = db.connect().execute("SELECT * FROM rules ORDER BY id").fetchall()
     return [
@@ -52,6 +149,7 @@ def list_rules() -> list[dict]:
             "group": r["group_name"],
             "enabled": bool(r["enabled"]),
             "labels": db.jloads(r["labels"], {}),
+            "format": r["format"] if "format" in r.keys() else "",
         }
         for r in rows
     ]
@@ -73,15 +171,16 @@ def upsert_rule(rule: dict) -> int:
         rule.get("group", "default"),
         1 if rule.get("enabled", True) else 0,
         json.dumps(rule.get("labels", {})),
+        rule.get("format", "") if rule.get("format") in FORMATS else "",
     )
     if existing:
         conn.execute(
-            "UPDATE rules SET expr=?, for_s=?, severity=?, summary=?, runbook=?, group_name=?, enabled=?, labels=? WHERE id=?",
+            "UPDATE rules SET expr=?, for_s=?, severity=?, summary=?, runbook=?, group_name=?, enabled=?, labels=?, format=? WHERE id=?",
             (*values, existing["id"]),
         )
         return existing["id"]
     cur = conn.execute(
-        "INSERT INTO rules(name, expr, for_s, severity, summary, runbook, group_name, enabled, labels) VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO rules(name, expr, for_s, severity, summary, runbook, group_name, enabled, labels, format) VALUES(?,?,?,?,?,?,?,?,?,?)",
         (name, *values),
     )
     return cur.lastrowid
@@ -282,6 +381,15 @@ def test_route(receiver: str) -> dict:
     return {"receiver": recv["name"], "status": "delivered"}
 
 
+def _rule_formats() -> dict:
+    """rule name -> declared value format, so alert rows can be rendered in units."""
+    try:
+        rows = db.connect().execute("SELECT name, format FROM rules").fetchall()
+    except Exception:  # noqa: BLE001 - pre-migration database
+        return {}
+    return {r["name"]: (r["format"] or "") for r in rows}
+
+
 def list_alerts(state: str = "") -> list[dict]:
     conn = db.connect()
     sql = "SELECT * FROM alert_instances"
@@ -290,9 +398,11 @@ def list_alerts(state: str = "") -> list[dict]:
         sql += " WHERE state=?"
         args.append(state)
     sql += " ORDER BY CASE state WHEN 'firing' THEN 0 WHEN 'pending' THEN 1 WHEN 'resolved' THEN 2 ELSE 3 END, last_eval DESC"
+    formats = _rule_formats()
     out = []
     for r in conn.execute(sql, args):
         labels = db.jloads(r["labels"], {})
+        fmt = formats.get(r["name"], "")
         out.append(
             {
                 "id": r["id"],
@@ -301,6 +411,9 @@ def list_alerts(state: str = "") -> list[dict]:
                 "summary": r["summary"],
                 "labels": labels,
                 "value": r["value"],
+                "value_display": format_value(r["value"], fmt),
+                "value_note": value_note(r["expr"], r["value"], fmt),
+                "format": fmt,
                 "expr": r["expr"],
                 "state": r["state"],
                 "active_since": r["active_since"],
@@ -358,8 +471,25 @@ def who_is_on_call(at: int | None = None) -> list[dict]:
     return out
 
 
+# Units for the rules that ship with a demo environment. Applied on boot, so
+# databases created before the `format` column existed get them too.
+DEFAULT_UNITS = {
+    "HighErrorRate": "ratio",
+    "LatencyP99High": "seconds",
+    "DiskWillFillIn4Hours": "bytes",
+    "DatabaseConnectionsSaturated": "ratio",
+    "QueueBacklog": "number",
+    "PodCrashLooping": "number",
+}
+
+
 def seed_defaults() -> None:
     conn = db.connect()
+    for name, fmt in DEFAULT_UNITS.items():
+        conn.execute(
+            "UPDATE rules SET format=? WHERE name=? AND (format IS NULL OR format='')",
+            (fmt, name),
+        )
     if conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0:
         for rule in DEFAULT_RULES:
             upsert_rule(rule)
@@ -408,6 +538,7 @@ DEFAULT_RULES = [
         "severity": "warning",
         "summary": "Filesystem projected to fill within 4 hours",
         "group": "host",
+        "format": "bytes",  # the expression returns free bytes, not a ratio
     },
     {
         "name": "QueueBacklog",

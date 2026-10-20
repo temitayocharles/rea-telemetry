@@ -1,5 +1,8 @@
 import { h, clear, empty, toast, modal, formField, byUnit } from "../ui.js";
 import { timeSeries, mount, gauge, heatmap, barList } from "../charts.js";
+import { COLS, GAP, ROW_HEIGHT, layoutHeight, movePanel, normalizeLayout, panelHeight, resizePanel, tidy } from "../grid.js";
+
+const NARROW = () => (typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(max-width: 900px)").matches : false);
 
 export async function render(root, ctx) {
   const { parts, params } = ctx.route;
@@ -69,6 +72,7 @@ async function renderDashboard(root, ctx, uid, params) {
   catch { root.appendChild(empty("Dashboard not found", uid, h("button", { class: "btn", onClick: () => ctx.go("/dashboards") }, "Back to dashboards"))); return; }
   ctx.setTitle(dash.title);
   let edit = params.get("edit") === "1";
+  let dirty = false;
   const r = ctx.range;
   const varValues = {};
   for (const v of dash.templating || []) {
@@ -90,11 +94,12 @@ async function renderDashboard(root, ctx, uid, params) {
       h("div", { class: "row", style: { alignItems: "center", gap: "8px" } },
         h("button", { class: "btn ghost sm", onClick: () => ctx.go("/dashboards") }, "←"),
         h("h1", {}, dash.title),
-        edit ? h("span", { class: "badge warn" }, "editing") : null),
+        edit ? h("span", { class: "badge warn" }, dirty ? "unsaved layout" : "editing") : null),
       h("p", { class: "sub" }, `${dash.folder} · ${(dash.tags || []).join(", ") || "no tags"} · ${dash.panels.length} panels`)));
     head.appendChild(h("div", { class: "row", style: { gap: "6px" } },
       edit ? h("button", { class: "btn primary", onClick: saveAll }, "Save") : null,
-      h("button", { class: "btn", onClick: () => openAddPanel() }, edit ? "Add panel" : "Add panel"),
+      edit ? h("button", { class: "btn", title: "Re-pack panels in order", onClick: () => { applyLayout(tidy(dash.panels)); drawPanels(); } }, "Tidy") : null,
+      h("button", { class: "btn", onClick: () => openAddPanel() }, "Add panel"),
       h("button", { class: "btn", onClick: () => { edit = !edit; drawHead(); drawPanels(); } }, edit ? "Exit edit" : "Edit"),
       h("a", { class: "btn ghost", href: `/dashboards/${uid}?edit=1` }, "Share"),
       h("button", { class: "btn ghost", onClick: () => exportDashboard() }, "JSON")));
@@ -129,27 +134,121 @@ async function renderDashboard(root, ctx, uid, params) {
     varBar.appendChild(h("span", { class: "hint" }, `${ctx.range.long} · refreshes${ctx.state ? " automatically" : ""}`));
   }
 
+  function applyLayout(panels) {
+    dash.panels = panels;
+    if (!dirty) {
+      dirty = true;
+      drawHead();
+    }
+  }
+
   async function drawPanels() {
-    for (const c of charts) c?.();
+    for (const c of charts) c?.stop?.(); // mount() returns { redraw, stop }, not a function
     charts.length = 0;
     clear(grid);
     if (!dash.panels.length) {
       grid.appendChild(h("div", { style: { gridColumn: "1 / span 24" } }, empty("This dashboard is empty", "Add a panel to start visualising.", h("button", { class: "btn primary", onClick: () => openAddPanel() }, "Add panel"))));
       return;
     }
-    for (const p of dash.panels) {
-      const el = h("div", { class: "dash-panel", style: { gridColumn: `${(p.gridPos?.x || 0) + 1} / span ${p.gridPos?.w || 12}`, gridRow: `span ${p.gridPos?.h || 6}` } });
-      el.appendChild(h("div", { class: "dp-head" },
-        h("span", {}, p.title),
+    // one canonical layout, so rendering, dragging and saving all agree
+    dash.panels = normalizeLayout(dash.panels);
+    grid.style.setProperty("--grid-rows", String(layoutHeight(dash.panels)));
+    const narrow = NARROW();
+    grid.classList.toggle("narrow", narrow);
+
+    dash.panels.forEach((p, index) => {
+      const g = p.gridPos;
+      const el = h("div", {
+        class: `dash-panel${edit ? " editable" : ""}`,
+        style: narrow
+          ? { height: panelHeight(p) + "px" }
+          : { gridColumn: `${g.x + 1} / span ${g.w}`, gridRow: `${g.y + 1} / span ${g.h}` },
+        dataset: { index: String(index) },
+      });
+      const head = h("div", { class: `dp-head${edit ? " grab" : ""}`, title: edit ? "Drag to move" : "" },
+        h("span", { class: "dp-title" }, p.title),
         h("span", { class: "muted" }, p.unit !== "short" ? p.unit : ""),
         edit ? h("div", { class: "row", style: { marginLeft: "auto", gap: "3px" } },
-          h("button", { class: "btn sm ghost", onClick: () => openPanelEditor(p) }, "edit"),
-          h("button", { class: "btn sm ghost", onClick: () => { dash.panels = dash.panels.filter((x) => x !== p); drawPanels(); } }, "×")) : null));
+          h("button", { class: "btn sm ghost", onClick: (e) => { e.stopPropagation(); openPanelEditor(p); } }, "edit"),
+          h("button", { class: "btn sm ghost", onClick: (e) => { e.stopPropagation(); applyLayout(dash.panels.filter((x) => x !== p)); drawPanels(); } }, "×")) : null);
+      el.appendChild(head);
+      if (edit && !narrow) head.addEventListener("mousedown", (e) => startDrag(e, index, el, "move"));
       const body = h("div", { class: "dp-body" });
       el.appendChild(body);
+      if (edit && !narrow) el.appendChild(h("div", { class: "dp-resize", title: "Drag to resize", onMousedown: (e) => startDrag(e, index, el, "resize") }));
       grid.appendChild(el);
       renderPanel(body, p, charts);
-    }
+    });
+  }
+
+  // ---- drag and resize (edit mode only) --------------------------------
+  function startDrag(event, index, el, mode) {
+    if (event.button !== 0 || NARROW()) return;
+    if (event.target.closest("button")) return;
+    event.preventDefault();
+    const rect = grid.getBoundingClientRect();
+    const colWidth = (rect.width - (COLS - 1) * GAP) / COLS;
+    const pitchX = colWidth + GAP;
+    const pitchY = ROW_HEIGHT + GAP;
+    const startLayout = dash.panels.map((p) => ({ ...p, gridPos: { ...p.gridPos } }));
+    const start = startLayout[index].gridPos;
+    const pointer = { x: event.clientX, y: event.clientY };
+    const wasEdit = edit;
+
+    const ghost = h("div", { class: "dp-ghost" });
+    grid.appendChild(ghost);
+    el.classList.add("dragging");
+    grid.classList.add("interacting");
+    if (mode === "resize") el.classList.add("resizing");
+
+    const paintGhost = (panel) => {
+      const g = panel.gridPos;
+      Object.assign(ghost.style, {
+        left: `${g.x * pitchX}px`,
+        top: `${g.y * pitchY}px`,
+        width: `${g.w * colWidth + (g.w - 1) * GAP}px`,
+        height: `${g.h * ROW_HEIGHT + (g.h - 1) * GAP}px`,
+      });
+    };
+    paintGhost(startLayout[index]);
+
+    let latest = startLayout;
+    const onMove = (e) => {
+      const dx = e.clientX - pointer.x;
+      const dy = e.clientY - pointer.y;
+      const dCol = Math.round(dx / pitchX);
+      const dRow = Math.round(dy / pitchY);
+      if (mode === "move") {
+        latest = movePanel(startLayout, index, start.x + dCol, start.y + dRow);
+      } else {
+        latest = resizePanel(startLayout, index, start.w + dCol, start.h + dRow);
+      }
+      paintGhost(latest[index]);
+      // move the real panels live so the layout reads like Grafana's
+      latest.forEach((p, i) => {
+        const node = grid.querySelector(`.dash-panel[data-index="${i}"]`);
+        if (!node) return;
+        node.style.gridColumn = `${p.gridPos.x + 1} / span ${p.gridPos.w}`;
+        node.style.gridRow = `${p.gridPos.y + 1} / span ${p.gridPos.h}`;
+      });
+      grid.style.setProperty("--grid-rows", String(layoutHeight(latest)));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      ghost.remove();
+      el.classList.remove("dragging", "resizing");
+      grid.classList.remove("interacting");
+      const changed = JSON.stringify(latest.map((p) => p.gridPos)) !== JSON.stringify(startLayout.map((p) => p.gridPos));
+      if (changed) {
+        applyLayout(latest);
+        drawPanels(); // re-render so charts fit their new box
+      } else if (wasEdit) {
+        drawPanels();
+      }
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   }
 
   function renderPanel(body, p, cleanups) {
@@ -225,7 +324,7 @@ async function renderDashboard(root, ctx, uid, params) {
   }
 
   function openPanelEditor(existing) {
-    const panelObj = existing || { id: Date.now(), title: "New panel", type: "timeseries", unit: "short", gridPos: { x: 0, y: 0, w: 12, h: 6 }, targets: [{ refId: "A", expr: "sum(rate(http_requests_total[5m])) by (service)", legend: "{{service}}" }] };
+    const panelObj = existing || { id: Date.now(), title: "New panel", type: "timeseries", unit: "short", gridPos: { x: 0, y: layoutHeight(dash.panels), w: 12, h: 6 }, targets: [{ refId: "A", expr: "sum(rate(http_requests_total[5m])) by (service)", legend: "{{service}}" }] };
     const titleIn = h("input", { class: "input", value: panelObj.title });
     const exprIn = h("textarea", { class: "textarea", value: panelObj.targets[0]?.expr || "" });
     const legendIn = h("input", { class: "input mono", value: panelObj.targets[0]?.legend || "{{service}}" });
@@ -256,7 +355,7 @@ async function renderDashboard(root, ctx, uid, params) {
         preview,
       ],
       footer: [
-        existing ? h("button", { class: "btn danger", onClick: () => { dash.panels = dash.panels.filter((p) => p !== existing); m.close(); drawPanels(); } }, "Delete") : null,
+        existing ? h("button", { class: "btn danger", onClick: () => { applyLayout(dash.panels.filter((p) => p !== existing)); m.close(); drawPanels(); } }, "Delete") : null,
         h("button", { class: "btn ghost", onClick: () => m.close() }, "Cancel"),
         h("button", { class: "btn primary", onClick: () => {
           const updated = {
@@ -267,8 +366,9 @@ async function renderDashboard(root, ctx, uid, params) {
             targets: [{ refId: "A", expr: exprIn.value, legend: legendIn.value }],
             gridPos: { ...panelObj.gridPos, w: Number(wIn.value), h: Number(hIn.value) },
           };
-          if (existing) Object.assign(existing, updated);
-          else dash.panels.push(updated);
+          applyLayout(existing
+            ? dash.panels.map((p) => (p === existing ? updated : p))
+            : [...dash.panels, updated]);
           m.close();
           drawPanels();
         } }, "Apply"),
@@ -277,8 +377,14 @@ async function renderDashboard(root, ctx, uid, params) {
   }
 
   async function saveAll() {
-    await ctx.api.saveDashboard({ uid: dash.uid, title: dash.title, folder: dash.folder, tags: dash.tags, panels: dash.panels, templating: dash.templating });
-    toast("Dashboard saved");
+    await ctx.api.saveDashboard({
+      uid: dash.uid, title: dash.title, folder: dash.folder, tags: dash.tags,
+      panels: dash.panels.map((p) => ({ ...p, gridPos: { ...p.gridPos } })),
+      templating: dash.templating,
+    });
+    dirty = false;
+    drawHead();
+    toast(`Layout saved · ${dash.panels.length} panels`);
   }
 
   function exportDashboard() {
@@ -293,5 +399,10 @@ async function renderDashboard(root, ctx, uid, params) {
   drawHead();
   await drawVars();
   await drawPanels();
-  ctx.setCleanup(() => charts.forEach((c) => c?.()));
+  const onResize = () => { if (edit) return; drawPanels(); };
+  window.addEventListener("resize", onResize);
+  ctx.setCleanup(() => {
+    window.removeEventListener("resize", onResize);
+    charts.forEach((c) => c?.stop?.());
+  });
 }

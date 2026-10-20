@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS rules (
     runbook TEXT NOT NULL DEFAULT '',
     group_name TEXT NOT NULL DEFAULT 'default',
     enabled INTEGER NOT NULL DEFAULT 1,
-    labels TEXT NOT NULL DEFAULT '{}'
+    labels TEXT NOT NULL DEFAULT '{}',
+    format TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS alert_instances (
@@ -315,6 +316,19 @@ _LOCAL = threading.local()
 _LOCK = threading.Lock()
 _initialised = set()
 
+# Columns added after the first release. Applied to existing databases on open
+# (SQLite has no "ADD COLUMN IF NOT EXISTS"), so upgrading never loses data.
+MIGRATIONS = (
+    ("rules", "format", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, ddl in MIGRATIONS:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
 
 def db_path() -> str:
     return os.environ.get(
@@ -350,6 +364,7 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     with _LOCK:
         if path not in _initialised:
             conn.executescript(SCHEMA)
+            _migrate(conn)
             _initialised.add(path)
     return conn
 

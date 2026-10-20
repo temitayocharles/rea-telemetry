@@ -47,6 +47,7 @@ suite and the UI all able to talk to the same engine without duplication.
 | `synthetics.py` | HTTP checks with assertions, result history, status page |
 | `incidents.py` | Incident lifecycle, timeline events, postmortem document |
 | `dashboards.py` | Dashboard CRUD, default dashboards, panel helpers |
+| `craft/web/js/grid.js` | 24-column layout maths: normalise, collide, compact, move, resize, tidy |
 | `loadtest.py` | Bounded concurrent HTTP load generation, percentile aggregation |
 | `server.py` | Route table, static file serving, collector thread, snapshot export |
 | `cli.py` | Argparse front-end over the same engine |
@@ -181,6 +182,26 @@ JSON in, JSON out; errors are `{"error": "..."}` with a non-200 status. Static f
 from `craft/web/` with a `text/html` SPA fallback for unknown paths. There is no authentication and no
 CORS restriction — bind to localhost or put it behind your own proxy.
 
+## Dashboard layout
+
+Panels are placed on a 24-column grid of 30 px rows with a 10 px gutter, exactly like Grafana:
+`gridPos = {x, y, w, h}`. The maths lives in `craft/web/js/grid.js` as pure functions, so it can
+be unit tested without a browser (`tests/grid_check.mjs`, run by `tests/test_grid.py`).
+
+- `normalizeLayout` clamps hostile input (negative widths, columns past 24, missing `y`) and packs
+  panels without overlap.
+- `movePanel` / `resizePanel` drop a panel at a cell, push anything it overlaps downwards
+  (transitively), then compact.
+- `compact` is the react-grid-layout algorithm: walk panels top-to-bottom, left-to-right, float
+  each one up until something blocks it, then drop it below whatever it still overlaps. Upward
+  gravity means a panel dragged into empty space springs back, which is why Grafana dashboards
+  never have holes — and why dropping onto a neighbour re-packs rather than swaps.
+- `tidy` re-packs everything in reading order, for when a layout has been dragged into a mess.
+
+Dragging is pointer-only: `mousedown` on the panel header, `mousemove` on the document, `mouseup`
+to commit. The pixel delta is converted to grid cells once (`colWidth = (width - 23 * gap) / 24`),
+so scrolling mid-drag cannot desynchronise it. Charts re-render on drop so they fit their new box.
+
 ## Testing
 
 `tests/` uses only `unittest`:
@@ -189,6 +210,8 @@ CORS restriction — bind to localhost or put it behind your own proxy.
   `rate` is analytically known) and asserts function, aggregation and label behaviour.
 - `test_ingest_alerting.py` exercises every ingest path, then the alert state machine, silences,
   incident promotion, retention, synthetic checks and the status page.
+- `test_grid.py` shells out to node for the layout assertions and skips when node is absent, so
+  the suite stays green on a machine with no JavaScript runtime.
 - `test_live.py` covers the demo continuation: appending at the recent rate, clamping gauges to
   sane ranges, rebasing after a multi-hour gap, and the disabled/no-data no-ops.
 - `test_api.py` boots a real `ThreadingHTTPServer` on an ephemeral port against a seeded temporary
