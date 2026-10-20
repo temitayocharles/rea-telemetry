@@ -409,21 +409,25 @@ def service_graph(start: int, end: int) -> dict:
         )
         for s in (r["parent"], r["child"]):
             nodes.setdefault(s, {"name": s})
-    stats = {
-        r["service"]: {
-            "spans": r["n"],
-            "errors": r["errs"] or 0,
-            "p95_ms": 0,
-        }
-        for r in conn.execute(
-            """SELECT service, COUNT(*) n, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) errs
-               FROM spans WHERE start_us>=? AND start_us<=? GROUP BY service""",
-            (start * 1_000_000, end * 1_000_000),
-        )
-    }
-    for name, s in stats.items():
+    durations: dict[str, list[int]] = {}
+    errors: dict[str, int] = {}
+    for r in conn.execute(
+        "SELECT service, duration_us, status FROM spans WHERE start_us>=? AND start_us<=?",
+        (start * 1_000_000, end * 1_000_000),
+    ):
+        durations.setdefault(r["service"], []).append(r["duration_us"] or 0)
+        if r["status"] == "error":
+            errors[r["service"]] = errors.get(r["service"], 0) + 1
+    for name, values in durations.items():
+        values.sort()
         node = nodes.setdefault(name, {"name": name})
-        node.update(s)
+        node.update(
+            {
+                "spans": len(values),
+                "errors": errors.get(name, 0),
+                "p95_ms": round(values[min(len(values) - 1, int(0.95 * len(values)))] / 1000, 2),
+            }
+        )
     return {"nodes": list(nodes.values()), "edges": edges}
 
 

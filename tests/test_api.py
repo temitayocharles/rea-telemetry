@@ -93,6 +93,10 @@ class APITests(unittest.TestCase):
         self.assertTrue(detail["spans"])
         agg, _ = self.call(f"/api/traces/aggregates?start={end - 21600}&end={end}")
         self.assertTrue(agg["groups"])
+        self.assertGreater(agg["groups"][0]["p95_ms"], 0)
+        graph, _ = self.call(f"/api/traces/graph?start={end - 21600}&end={end}")
+        self.assertTrue(graph["edges"])
+        self.assertGreater(max(n["p95_ms"] for n in graph["nodes"]), 0)
 
     def test_dashboards_crud(self):
         listing, _ = self.call("/api/dashboards")
@@ -168,6 +172,21 @@ class APITests(unittest.TestCase):
         payload, code = self.call("/metrics", raw=True)
         self.assertEqual(code, 200)
         self.assertIn(b"telemetrycraft_series_total", payload)
+
+    def test_saved_searches_and_paging(self):
+        created, _ = self.call("/api/searches", "POST", {"app": "search", "name": "APITest search", "query": '{service="checkout-service"}'})
+        self.assertTrue(created["ok"])
+        listing, _ = self.call("/api/searches")
+        self.assertTrue(any(s["id"] == created["id"] for s in listing["searches"]))
+        _, code = self.call("/api/searches", "POST", {"name": "no query"})
+        self.assertEqual(code, 400)
+        removed, _ = self.call(f"/api/searches/{created['id']}", "DELETE")
+        self.assertTrue(removed["ok"])
+        paged, _ = self.call("/api/oncall/page", "POST", {"person": "API Tester", "title": "test page"})
+        self.assertTrue(paged["ok"])
+        self.assertEqual(paged["paged"], "API Tester")
+        _, code = self.call("/api/oncall/page", "POST", {})
+        self.assertEqual(code, 400)
 
     def test_export(self):
         data, _ = self.call("/api/export")

@@ -77,6 +77,7 @@ export const api = {
   saveReceivers: (receivers) => request("/api/receivers", { method: "POST", body: { receivers } }),
   testReceiver: (receiver) => request("/api/receivers/test", { method: "POST", body: { receiver } }),
   onCall: () => request("/api/oncall"),
+  pageOncall: (body) => request("/api/oncall/page", { method: "POST", body }),
   schedules: () => request("/api/schedules"),
   saveSchedule: (s) => request("/api/schedules", { method: "POST", body: s }),
 
@@ -116,6 +117,11 @@ export const api = {
   settings: () => request("/api/settings"),
   saveSettings: (s) => request("/api/settings", { method: "POST", body: s }),
   prune: () => request("/api/collector/prune", { method: "POST", body: {} }),
+
+  // Saved searches
+  searches: () => request("/api/searches"),
+  saveSearch: (body) => request("/api/searches", { method: "POST", body }),
+  deleteSearch: (id) => request(`/api/searches/${id}`, { method: "DELETE" }),
 
   // Misc
   search: (q) => request(`/api/search${qs({ q })}`),

@@ -170,6 +170,14 @@ Severities are `SEV1`–`SEV4`.
 
 ---
 
+## Saved searches and on-call
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/POST | `/api/searches` | List / save `{"app":"search","name":"…","query":"…"}` |
+| DELETE | `/api/searches/<id>` | Remove a saved search |
+| POST | `/api/oncall/page` | `{"person","title","message"}` — records a manual page in the delivery log |
+
 ## Dashboards, search, load, collector, settings
 
 | Method | Path | Notes |

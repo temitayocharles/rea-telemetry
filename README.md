@@ -17,7 +17,7 @@ an active SEV2 incident) in about four seconds, so the UI is never an empty shel
 
 ---
 
-## The thirteen apps
+## The apps
 
 | Craft | Replaces | What actually works |
 |---|---|---|
@@ -25,9 +25,11 @@ an active SEV2 incident) in about four seconds, so the UI is never an empty shel
 | **Metrics** | Prometheus + Grafana Explore | A real PromQL engine: selectors, `rate`, `histogram_quantile`, aggregations, vector matching, `predict_linear`, label functions; instant + range, series table, label browser, scrape targets |
 | **Dashboards** | Grafana | Folders, panels (timeseries, stat, gauge, table, bargauge, heatmap), template variables, grid layout, panel editor with live preview, JSON export |
 | **Logs** | Loki + Grafana Logs | LogQL stream selectors, line filters (`\|=`, `!=`, `\|~`, `!~`), label filters, volume histogram, per-level filtering, expandable rows, live tail |
+| **Search** | OpenSearch / Kibana Discover | Index-pattern exploration, hit histogram, field facets with counts, free-text to LogQL translation, saved searches, raw document viewer |
 | **Traces** | Jaeger / Tempo | Trace search by service/status/operation/duration, latency scatter, service map derived from span parentage, full waterfall with span attributes, slowest-first |
 | **Errors** | Sentry | Fingerprinted issue groups, stack traces with source lines, affected users, releases, hourly sparklines, resolve/ignore/assign |
 | **Alerting** | Prometheus rules + Alertmanager | PromQL rules with `for` semantics (pending → firing), grouping, acknowledgement, silences with matchers, receivers, delivery log, rule editor with expression test |
+| **On-call** | PagerDuty schedules | Weekly, daily and follow-the-sun rotations, computed handoffs, escalation ladder, manual pages, delivery log |
 | **Incidents** | PagerDuty / incident.io | Declare (SEV1–4), roles, responder roster, status transitions, timestamped timeline, blameless postmortem with action items |
 | **SLOs** | Nobl9 / Sloth | SLI/total expressions, error budgets, 1h/6h/24h burn rates, projected exhaustion, breach status |
 | **Synthetics** | Pingdom / Checkly + Statuspage | Multi-region HTTP checks with assertions, uptime bars, latency, live execution, and a public status page |
@@ -35,7 +37,7 @@ an active SEV2 incident) in about four seconds, so the UI is never an empty shel
 | **Collector** | OpenTelemetry Collector | Pipeline config (receivers → processors → exporters), every ingest endpoint documented with a copyable command, storage and retention controls, scrape targets |
 | **Settings** | — | Organisation, receivers, retention, on-call rotations, snapshot export, demo regeneration |
 
-Every screen is wired to the same database. Silence an alert and it shows up in the firing list;
+Fifteen screens, fourteen tools, one process. Every screen is wired to the same database. Silence an alert and it shows up in the firing list;
 declare an incident from an alert and it lands on the overview; resolve the incident and the
 status page changes. This is not a mockup — the tests exercise the round trips.
 
@@ -194,7 +196,7 @@ have dashboards, alerts, traces, error tracking, and error budgets.
 ## Development
 
 ```bash
-make test      # 50 tests, stdlib unittest, no pytest required
+make test      # 51 tests, stdlib unittest, no pytest required
 make run       # server with demo data
 make seed      # regenerate demo data
 make docker

@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import re
+import sys
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -52,6 +53,18 @@ def _time_ms(params, key, default):
         return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp() * 1000)
     except ValueError:
         return default
+
+
+class CraftServer(ThreadingHTTPServer):
+    """Threaded server that shrugs off the browser hanging up mid-response."""
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -492,6 +505,39 @@ def route(method, path, params, h):
         conn.execute("UPDATE dashboards SET starred=? WHERE uid=?", (0 if row["starred"] else 1, m.group(1)))
         return {"ok": True, "starred": not row["starred"]}
 
+    # --- Saved searches (Kibana/OpenSearch-style saved queries)
+    if path == "/api/searches":
+        if method == "GET":
+            rows = db.connect().execute("SELECT * FROM saved_searches ORDER BY created_at DESC").fetchall()
+            return {"searches": [dict(r) for r in rows]}
+        body = h.read_json()
+        if not body.get("name") or not body.get("query"):
+            raise ValueError("name and query are required")
+        conn = db.connect()
+        conn.execute(
+            "INSERT INTO saved_searches(app, name, query, created_at) VALUES(?,?,?,?)",
+            (body.get("app", "search"), body["name"], body["query"], db.now()),
+        )
+        return {"ok": True, "id": conn.execute("SELECT last_insert_rowid()").fetchone()[0]}
+    m = re.match(r"^/api/searches/(\d+)$", path)
+    if m and method == "DELETE":
+        db.connect().execute("DELETE FROM saved_searches WHERE id=?", (int(m.group(1)),))
+        return {"ok": True}
+
+    # --- Paging (manual page to whoever is on call)
+    if path == "/api/oncall/page" and method == "POST":
+        body = h.read_json()
+        person = (body.get("person") or "").strip()
+        if not person:
+            raise ValueError("person is required")
+        title = body.get("title") or "Manual page"
+        message = body.get("message") or "Please acknowledge in the incident channel."
+        db.connect().execute(
+            "INSERT INTO notifications(ts, receiver, kind, title, body, status) VALUES(?,?,?,?,?,?)",
+            (db.now(), "page:" + person, "page", title, message, "delivered"),
+        )
+        return {"ok": True, "paged": person, "title": title, "ts": db.now()}
+
     # --- Search
     if path == "/api/search":
         term = params.get("q", [""])[0].strip()
@@ -550,9 +596,11 @@ APP_CATALOG = [
     {"id": "explore", "name": "Metrics", "desc": "PromQL explorer and TSDB", "icon": "chart", "path": "/#/metrics"},
     {"id": "dashboards", "name": "Dashboards", "desc": "Panels, variables, layouts", "icon": "layout", "path": "/#/dashboards"},
     {"id": "logs", "name": "Logs", "desc": "LogQL search, live tail", "icon": "terminal", "path": "/#/logs"},
+    {"id": "search", "name": "Search", "desc": "Discover-style log analytics", "icon": "search", "path": "/#/search"},
     {"id": "traces", "name": "Traces", "desc": "Distributed tracing, service map", "icon": "route", "path": "/#/traces"},
     {"id": "errors", "name": "Errors", "desc": "Issue tracking, stack traces", "icon": "alert", "path": "/#/errors"},
     {"id": "alerts", "name": "Alerting", "desc": "Rules, silences, routing", "icon": "bell", "path": "/#/alerts"},
+    {"id": "oncall", "name": "On-call", "desc": "Rotations, escalations, paging", "icon": "phone", "path": "/#/oncall"},
     {"id": "incidents", "name": "Incidents", "desc": "Response, timeline, postmortems", "icon": "siren", "path": "/#/incidents"},
     {"id": "slo", "name": "SLOs", "desc": "Objectives and error budgets", "icon": "target", "path": "/#/slo"},
     {"id": "synthetics", "name": "Synthetics", "desc": "Uptime checks and status page", "icon": "globe", "path": "/#/synthetics"},
@@ -940,8 +988,7 @@ def serve(port: int = 8787, host: str = "0.0.0.0", autoseed: bool = True):
     collector = Collector()
     threading.Thread(target=collector.loop, name="craft-collector", daemon=True).start()
     synthetics.start_worker()
-    httpd = ThreadingHTTPServer((host, port), Handler)
-    httpd.daemon_threads = True
+    httpd = CraftServer((host, port), Handler)
     print(f"TelemetryCraft {VERSION} listening on http://{host}:{port}  (db: {db.db_path()})")
     try:
         httpd.serve_forever()
