@@ -185,6 +185,21 @@ class PromQLTests(unittest.TestCase):
         values = [float(v) for _, v in res["result"][0]["values"]]
         self.assertTrue(all(v > 0 for v in values), values)
 
+    def test_instant_samples_carry_the_eval_time(self):
+        # Prometheus stamps instant vectors with the evaluation time, not 0
+        res = self.q('up{job="api"}')
+        self.assertEqual(res["result"][0]["value"][0], float(self.now))
+        scalar = self.q("scalar(up{job=\"api\"})")
+        self.assertEqual(scalar["resultType"], "scalar")
+        self.assertEqual(scalar["result"][0], float(self.now))
+        sub = self.q('max_over_time(up{job="api"}[3m:1m])')
+        self.assertEqual(sub["result"][0]["value"][0], float(self.now))
+
+    def test_range_steps_keep_their_own_timestamps(self):
+        res = promql.query_range('up{job="api"}', (self.now - 30) * 1000, self.now * 1000, 15_000)
+        stamps = [t for t, _ in res["result"][0]["values"]]
+        self.assertEqual(stamps, [float(self.now - 30), float(self.now - 15), float(self.now)])
+
     def test_subquery_keeps_all_labels(self):
         res = self.q("max_over_time(up[5m:1m])")
         jobs = sorted(s["metric"].get("job") for s in res["result"])

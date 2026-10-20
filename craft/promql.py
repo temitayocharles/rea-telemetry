@@ -1189,9 +1189,9 @@ def _fmt_value(v: float):
     return repr(float(v))
 
 
-def to_api(result, result_type=None):
+def to_api(result, result_type=None, ts_ms=0):
     if isinstance(result, (int, float)):
-        return {"resultType": "scalar", "result": [0, _fmt_value(float(result))]}
+        return {"resultType": "scalar", "result": [ts_ms / 1000.0, _fmt_value(float(result))]}
     if not result:
         return {"resultType": result_type or "vector", "result": []}
     if isinstance(result[0], Series):
@@ -1204,7 +1204,8 @@ def to_api(result, result_type=None):
         }
     return {
         "resultType": result_type or "vector",
-        "result": [{"metric": dict(s.labels), "value": [0, _fmt_value(s.value)]} for s in result],
+        # Prometheus stamps every instant sample with the evaluation time
+        "result": [{"metric": dict(s.labels), "value": [ts_ms / 1000.0, _fmt_value(s.value)]} for s in result],
     }
 
 
@@ -1217,12 +1218,12 @@ def query_instant(expr: str, time_ms: int):
         return {"resultType": "scalar", "result": [time_ms / 1000.0, _fmt_value(float(result))]}
     if result and isinstance(result[0], Series):
         # a range selector used as an instant query returns a matrix of raw values
-        return to_api(result, "matrix")
+        return to_api(result, "matrix", time_ms)
     if not result:
         # Determine intent: range selectors produce matrices
         if isinstance(ast, Selector) and ast.range_ms:
-            return to_api([], "matrix")
-    return to_api(result)
+            return to_api([], "matrix", time_ms)
+    return to_api(result, None, time_ms)
 
 
 def query_range(expr: str, start_ms: int, end_ms: int, step_ms: int):

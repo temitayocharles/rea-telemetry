@@ -216,7 +216,7 @@ have dashboards, alerts, traces, error tracking, and error budgets.
 ## Development
 
 ```bash
-make test      # 89 tests, stdlib unittest, no pytest required
+make test      # 91 tests, stdlib unittest, no pytest required
 make run       # server with demo data
 make seed      # regenerate demo data
 make docker
