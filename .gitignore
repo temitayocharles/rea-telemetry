@@ -22,3 +22,7 @@ dist/
 
 # Logs
 *.log
+
+# Browser checks (dev-only)
+node_modules/
+tests/browser/artifacts/

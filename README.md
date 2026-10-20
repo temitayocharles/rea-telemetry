@@ -217,6 +217,8 @@ have dashboards, alerts, traces, error tracking, and error budgets.
 
 ```bash
 make test      # 91 tests, stdlib unittest, no pytest required
+# real-browser verification (dev-only, needs a machine with Chromium):
+# see tests/browser/README.md
 make run       # server with demo data
 make seed      # regenerate demo data
 make docker
@@ -237,5 +239,7 @@ docs/             architecture, compatibility, API reference
 - [Compatibility](docs/COMPATIBILITY.md) — the exact PromQL, LogQL, OTLP and API subset supported
 - [HTTP API](docs/API.md) — every endpoint with request and response shapes
 - [CLI reference](docs/CLI.md) — every command, plus scripting recipes
+- [Handoff brief](HANDOFF.md) — the open work (real-browser verification, OTLP protobuf,
+  recording rules) written as a task brief with acceptance criteria
 
 MIT licensed. See [LICENSE](LICENSE).
