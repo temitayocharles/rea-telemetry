@@ -1,0 +1,24 @@
+# Telemetry data (generated locally, never committed)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Editors & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TelemetryCraft</title>
+    <meta name="description" content="One lightweight telemetry stack: metrics, logs, traces, errors, alerting, incidents, SLOs and synthetics." />
+    <link rel="icon" href="/img/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/app.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <aside class="rail" id="rail" aria-label="Primary">
+        <a class="brand" href="#/" title="TelemetryCraft">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+            <path d="M3 17.5 8 9l4 6 3.5-5L21 17.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="8" cy="9" r="1.6" fill="currentColor"/>
+          </svg>
+        </a>
+        <nav class="rail-nav" id="rail-nav"></nav>
+        <div class="rail-foot">
+          <button class="rail-btn" id="rail-help" title="Keyboard shortcuts" aria-label="Help">?</button>
+          <div class="avatar" title="Signed in as operator">OP</div>
+        </div>
+      </aside>
+      <div class="shell">
+        <header class="topbar">
+          <div class="crumbs" id="crumbs"></div>
+          <div class="topbar-actions">
+            <button class="search-trigger" id="search-trigger">
+              <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m16 16 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <span>Search everything</span><kbd>⌘K</kbd>
+            </button>
+            <div class="range-picker" id="range-picker"></div>
+            <button class="icon-btn" id="refresh-btn" title="Refresh now">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <span class="live-pill" id="live-pill"><i></i>live</span>
+          </div>
+        </header>
+        <main id="view" class="view" tabindex="-1"></main>
+      </div>
+    </div>
+    <div id="modal-root"></div>
+    <div id="toast-root" class="toast-root" aria-live="polite"></div>
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>
