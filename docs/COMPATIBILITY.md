@@ -69,9 +69,21 @@ predict_linear`.
 clamp_max sort sort_desc sort_by_label timestamp absent histogram_quantile label_replace label_join
 vector scalar time pi day_of_week hour minute month year days_in_month`.
 
-**Not implemented:** subqueries (`expr[5m:1m]`), `holt_winters`/`double_exponential_smoothing`,
-native histograms, `@` inside range selectors combined with subqueries, recording rules, remote
-read, and federation. `histogram_quantile` expects classic `_bucket` series with an `le` label.
+**Subqueries** — `expr[15m:1m]` and the shorthand `expr[15m:]` (step defaults to 1 m, or to the
+outer query step when that is larger) work anywhere a range vector does, including inside range
+functions and with `offset` / `@`:
+
+```promql
+max_over_time(sum(rate(http_requests_total[5m]))[15m:1m])
+count_over_time(rate(errors_total[5m]) > 0.1[30m:1m])
+```
+
+A subquery is evaluated at each step of its window, so instant queries widen their read window to
+cover the whole subquery instead of only the evaluation instant.
+
+**Not implemented:** `holt_winters`/`double_exponential_smoothing`, native histograms, recording
+rules, remote read, and federation. `histogram_quantile` expects classic `_bucket` series with an
+`le` label.
 
 Semantics worth knowing:
 

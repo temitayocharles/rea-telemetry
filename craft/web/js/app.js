@@ -1,5 +1,5 @@
 // Shell: navigation, routing, time range, command palette.
-import { api } from "./api.js";
+import { api, auth } from "./api.js";
 import { h, clear, debounce, modal, toast, $ } from "./ui.js";
 
 const ICONS = {
@@ -324,7 +324,57 @@ function handleGlobalKeys(e) {
   if (e.key === "]") { const i = RANGES.findIndex((r) => r.label === store.range); ctx.setRange(RANGES[Math.min(RANGES.length - 1, i + 1)].label); }
 }
 
-async function boot() {
+// ---------------- auth gate ----------------
+function showLogin(status = {}) {
+  let settled = false;
+  const method = status.method === "basic" ? "basic" : "token";
+  const input = h("input", {
+    class: "input",
+    type: method === "basic" ? "text" : "password",
+    placeholder: method === "basic" ? "user:password" : "paste the access token",
+    autofocus: true,
+    "aria-label": method === "basic" ? "user:password" : "access token",
+  });
+  const submit = h("button", { class: "btn primary" }, "Sign in");
+  const note = h("div", { class: "sub", style: { minHeight: "18px" } },
+    method === "basic" ? "Basic auth is on: type user:password." : "This server requires a bearer token.");
+  const send = async () => {
+    if (settled) return;
+    const raw = input.value.trim();
+    if (!raw) return;
+    submit.disabled = true;
+    note.textContent = "Checking…";
+    try {
+      const body = method === "basic"
+        ? { user: raw.split(":")[0], password: raw.split(":").slice(1).join(":") }
+        : { token: raw };
+      const res = await api.login(body);
+      auth.set(res.credential);
+      settled = true;
+      overlay.remove();
+      await boot();
+    } catch (err) {
+      note.textContent = err.status === 429 ? "Too many attempts. Wait a minute." : "That did not work. Try again.";
+      submit.disabled = false;
+    }
+  };
+  submit.addEventListener("click", send);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+  const overlay = h("div", { class: "auth-overlay", role: "dialog", "aria-modal": "true", "aria-label": "Sign in" },
+    h("form", { class: "auth-card", onsubmit: (e) => { e.preventDefault(); send(); } },
+      h("div", { class: "auth-brand" }, "Telemetry", h("span", {}, "Craft")),
+      h("div", { class: "sub" }, "Local-first observability. Sign in to continue."),
+      input,
+      submit,
+      note,
+      h("div", { class: "sub", style: { fontSize: "11px" } }, `method: ${method} · credential is stored in this browser only`)));
+  document.body.appendChild(overlay);
+  setTimeout(() => input.focus(), 0);
+}
+
+let chromeReady = false;
+
+function bootChrome() {
   renderRangePicker();
   renderNav();
   setupRefresh();
@@ -333,10 +383,27 @@ async function boot() {
   $("#rail-help").addEventListener("click", showShortcuts);
   document.addEventListener("keydown", handleGlobalKeys);
   window.addEventListener("hashchange", () => rerender());
+  window.addEventListener("craft:auth-required", () => {
+    const status = ctx.authStatus || { enabled: false, method: "token" };
+    auth.clear();
+    if (status.enabled && !$(".auth-overlay")) showLogin(status);
+  });
+  chromeReady = true;
+}
+
+async function boot() {
+  const status = await api.authStatus().catch(() => ({ enabled: false }));
+  ctx.authStatus = status;
+  if (status.enabled && (!auth.credential() || status.ok === false)) {
+    if (status.ok === false) auth.clear();
+    showLogin(status);
+    return;
+  }
+  if (!chromeReady) bootChrome();
   try {
     store.meta = await api.meta();
     const brand = $(".brand");
-    brand.appendChild(h("span", { class: "brand-word" }, "Telemetry", h("span", {}, "Craft")));
+    if (!$(".brand-word")) brand.appendChild(h("span", { class: "brand-word" }, "Telemetry", h("span", {}, "Craft")));
     ctx.meta = store.meta;
   } catch (err) {
     console.warn("meta unavailable", err);

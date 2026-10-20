@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 
 from . import alerting, db, incidents, loadtest, promql, query, seed, slo, store, synthetics
@@ -75,9 +76,19 @@ def since(text: str) -> int:
 
 # --------------------------------------------------------------------------
 def cmd_serve(args):
-    from .server import serve
+    from . import auth as authmod
+    from . import server
 
-    serve(args.port, args.host, autoseed=not args.no_seed)
+    if args.auth_token or args.auth_user or args.no_auth:
+        server.AUTH = authmod.Auth(
+            token=args.auth_token or "",
+            user=args.auth_user or "",
+            password=args.auth_password or "",
+        )
+    server.serve(
+        args.port, args.host, autoseed=not args.no_seed,
+        tls={"cert": args.tls_cert or "", "key": args.tls_key or "", "client_ca": args.tls_client_ca or ""},
+    )
 
 
 def cmd_seed(args):
@@ -249,13 +260,24 @@ def cmd_checks(args):
     table(["check", "url", "uptime 24h", "latency", "state"], rows, ["", "", "right", "right", ""])
 
 
+_CLIENT = {"token": ""}
+
+
+def _http_headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    token = _CLIENT["token"] or os.environ.get("CRAFT_TOKEN", "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def cmd_write(args):
     tick = int(time.time() * 1000)
     payload = {"series": [{"metric": args.metric, "labels": dict(x.split("=", 1) for x in args.label), "values": [[tick, args.value]]}]}
     req = urllib.request.Request(
         args.url.rstrip("/") + "/api/metrics/write",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=_http_headers(),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -270,7 +292,7 @@ def cmd_send_log(args):
     req = urllib.request.Request(
         args.url.rstrip("/") + "/api/logs",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=_http_headers(),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -305,25 +327,49 @@ def cmd_prune(args):
     print(json.dumps(store.prune(args.days), indent=2))
 
 
+COMMANDS = (
+    "serve", "seed", "status", "query", "metrics", "labels", "logs", "traces", "alerts",
+    "rules", "incidents", "slos", "checks", "write", "send-log", "load", "export", "prune",
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
+    def _new(name, **kwargs):
+        parser = sub.add_parser(name, **kwargs)
+        # every subcommand accepts the credential so it can sit next to the other flags
+        parser.add_argument(
+            "--token", default=argparse.SUPPRESS,
+            help="bearer token for outbound commands (or CRAFT_TOKEN)",
+        )
+        return parser
+
     ap = argparse.ArgumentParser(prog="craft", description="TelemetryCraft — one lightweight telemetry stack.")
     ap.add_argument("--db", help="path to the SQLite database (default data/telemetry.db)")
+    ap.add_argument("--token", help="bearer token for outbound commands (or CRAFT_TOKEN)")
     sub = ap.add_subparsers(dest="command")
 
-    p = sub.add_parser("serve", help="run the server and collector")
+
+    p = _new("serve", help="run the server and collector")
     p.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8787)))
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--no-seed", action="store_true")
+    p.add_argument("--auth-token", help="require this bearer token (or CRAFT_AUTH_TOKEN)")
+    p.add_argument("--auth-user", help="require HTTP basic auth with this user")
+    p.add_argument("--auth-password", help="password for --auth-user")
+    p.add_argument("--no-auth", action="store_true", help="disable auth even if the environment enables it")
+    p.add_argument("--tls-cert", help="PEM certificate (or CRAFT_TLS_CERT)")
+    p.add_argument("--tls-key", help="PEM private key (or CRAFT_TLS_KEY)")
+    p.add_argument("--tls-client-ca", help="require client certificates signed by this CA")
     p.set_defaults(func=cmd_serve)
 
-    p = sub.add_parser("seed", help="generate demo telemetry")
+    p = _new("seed", help="generate demo telemetry")
     p.add_argument("--force", action="store_true")
     p.add_argument("--self-url", default="http://127.0.0.1:8787")
     p.set_defaults(func=cmd_seed)
 
     sub.add_parser("status", help="storage and health summary").set_defaults(func=cmd_status)
 
-    p = sub.add_parser("query", help="run a PromQL expression")
+    p = _new("query", help="run a PromQL expression")
     p.add_argument("expr")
     p.add_argument("--range", help="e.g. 1h, 7d — omit for an instant query")
     p.add_argument("--step", type=int, default=60)
@@ -332,18 +378,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("metrics", help="list ingested metrics").set_defaults(func=cmd_metrics)
 
-    p = sub.add_parser("labels", help="list label names or values")
+    p = _new("labels", help="list label names or values")
     p.add_argument("name", nargs="?")
     p.set_defaults(func=cmd_labels)
 
-    p = sub.add_parser("logs", help="search logs")
+    p = _new("logs", help="search logs")
     p.add_argument("query", nargs="?", default='{service=~".+"}')
     p.add_argument("--since", default="1h")
     p.add_argument("--limit", type=int, default=40)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_logs)
 
-    p = sub.add_parser("traces", help="search traces or print one")
+    p = _new("traces", help="search traces or print one")
     p.add_argument("trace_id", nargs="?")
     p.add_argument("--service", default="")
     p.add_argument("--status", default="")
@@ -353,18 +399,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_traces)
 
-    p = sub.add_parser("alerts", help="list or evaluate alerts")
+    p = _new("alerts", help="list or evaluate alerts")
     p.add_argument("--json", action="store_true")
     p.add_argument("--evaluate", action="store_true")
     p.add_argument("--ack", help="alert instance id")
     p.add_argument("--by", default="cli")
     p.set_defaults(func=cmd_alerts)
 
-    p = sub.add_parser("rules", help="list alert rules")
+    p = _new("rules", help="list alert rules")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_rules)
 
-    p = sub.add_parser("incidents", help="list, declare or resolve incidents")
+    p = _new("incidents", help="list, declare or resolve incidents")
     p.add_argument("--json", action="store_true")
     p.add_argument("--declare")
     p.add_argument("--severity", default="SEV3")
@@ -372,23 +418,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--resolve")
     p.set_defaults(func=cmd_incidents)
 
-    p = sub.add_parser("slos", help="error budgets and burn rates")
+    p = _new("slos", help="error budgets and burn rates")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_slos)
 
-    p = sub.add_parser("checks", help="synthetic checks")
+    p = _new("checks", help="synthetic checks")
     p.add_argument("--json", action="store_true")
     p.add_argument("--run")
     p.set_defaults(func=cmd_checks)
 
-    p = sub.add_parser("write", help="write one metric to a running server")
+    p = _new("write", help="write one metric to a running server")
     p.add_argument("metric")
     p.add_argument("value", type=float)
     p.add_argument("--label", action="append", default=[])
     p.add_argument("--url", default="http://127.0.0.1:8787")
     p.set_defaults(func=cmd_write)
 
-    p = sub.add_parser("send-log", help="send a log line to a running server")
+    p = _new("send-log", help="send a log line to a running server")
     p.add_argument("--service", default="cli")
     p.add_argument("--level", default="info")
     p.add_argument("--body", default="")
@@ -396,7 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--url", default="http://127.0.0.1:8787")
     p.set_defaults(func=cmd_send_log)
 
-    p = sub.add_parser("load", help="run a bounded load test")
+    p = _new("load", help="run a bounded load test")
     p.add_argument("--target", required=True)
     p.add_argument("--name", default="cli load test")
     p.add_argument("--vus", type=int, default=5)
@@ -404,11 +450,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--method", default="GET")
     p.set_defaults(func=cmd_load)
 
-    p = sub.add_parser("export", help="export an API-shaped snapshot")
+    p = _new("export", help="export an API-shaped snapshot")
     p.add_argument("--out")
     p.set_defaults(func=cmd_export)
 
-    p = sub.add_parser("prune", help="apply retention now")
+    p = _new("prune", help="apply retention now")
     p.add_argument("--days", type=int)
     p.set_defaults(func=cmd_prune)
 
@@ -420,10 +466,18 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.db:
         os.environ["CRAFT_DB"] = args.db
+    if getattr(args, "token", None):
+        _CLIENT["token"] = args.token
     if not getattr(args, "func", None):
         ap.print_help()
         return
-    args.func(args)
+    try:
+        args.func(args)
+    except urllib.error.HTTPError as exc:
+        hint = " (the server wants a credential: pass --token)" if exc.code == 401 else ""
+        raise SystemExit(f"craft: {exc.code} {exc.reason}{hint}")
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"craft: cannot reach the server — {exc.reason}")
 
 
 if __name__ == "__main__":

@@ -179,8 +179,29 @@ generator.
 `http.server.ThreadingHTTPServer` with a small router: exact paths for fixed endpoints, a handful
 of regexes for `/<resource>/<id>` forms. Query strings are parsed into `{key: [values]}` lists.
 JSON in, JSON out; errors are `{"error": "..."}` with a non-200 status. Static files are served
-from `craft/web/` with a `text/html` SPA fallback for unknown paths. There is no authentication and no
-CORS restriction — bind to localhost or put it behind your own proxy.
+from `craft/web/` with a `text/html` SPA fallback for unknown paths. There is no CORS restriction —
+the API is meant for same-origin use — so bind to localhost, enable auth, or put it behind a proxy.
+
+## Auth and TLS
+
+`craft/auth.py` owns the lock; the router only asks it a question. `Auth` holds at most one bearer
+token and one user/password pair, both from flags or the `CRAFT_*` environment. `Handler` calls
+`AUTH.check(headers, path, params)` before routing, so a new endpoint is protected by default and
+the public set is an explicit allowlist (`/api/health`, `/api/status/health`, `/api/auth/status`,
+`/api/auth/login`). Comparisons use `hmac.compare_digest`; failures are counted per client address
+and a client that fails ten times inside a minute gets `429` until it succeeds once.
+
+Credentials are headers, not sessions: `/api/auth/login` validates once and echoes back the exact
+header value (`Bearer <token>` or `Basic <base64>`), which `api.js` stores in `localStorage` and
+replays. There is no cookie, no CSRF surface, and no server-side session table to keep — a reload
+keeps working and `curl` uses the same path the browser does. A `401` on any request dispatches a
+`craft:auth-required` event that brings the gate back rather than spraying toasts.
+
+TLS is the same story: `tls_context(cert, key, client_ca)` returns an `ssl.SSLContext` (TLS 1.2
+floor) or `None`, and `serve()` wraps the listening socket with it before `serve_forever`. That
+keeps HTTPS in one line instead of a reverse-proxy config, and `--tls-client-ca` turns on mTLS. If
+only one of the two PEM files is given the server refuses to start instead of silently serving
+plaintext.
 
 ## Dashboard layout
 
@@ -217,6 +238,9 @@ so scrolling mid-drag cannot desynchronise it. Charts re-render on drop so they 
 - `test_api.py` boots a real `ThreadingHTTPServer` on an ephemeral port against a seeded temporary
   database and walks ~20 endpoints, so routing, JSON shapes and HTTP status codes are covered
   end to end.
+- `test_auth.py` covers token/basic verification, public paths, login, lockout, and — minting a
+  throwaway self-signed certificate with `openssl` — a real HTTPS round trip through the wrapped
+  socket (skipped when `openssl` is absent).
 
 Each class resets the database in `setUpClass` and isolates by label — no cross-test ordering
 dependencies.

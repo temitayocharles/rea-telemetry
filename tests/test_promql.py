@@ -110,5 +110,88 @@ class PromQLTests(unittest.TestCase):
         self.assertIn("api", promql.label_values("service"))
 
 
+    # ---- subqueries ----------------------------------------------------
+    def test_parse_subquery(self):
+        node = promql.parse("rate(sum(rate(http_requests_total[1m]))[5m:15s])")
+        self.assertIsInstance(node, promql.Call)
+        arg = node.args[0]
+        self.assertIsInstance(arg, promql.Subquery)
+        self.assertEqual(arg.range_ms, 300_000)
+        self.assertEqual(arg.step_ms, 15_000)
+
+    def test_subquery_step_is_optional(self):
+        node = promql.parse("max_over_time(up[1h:])")
+        self.assertIsNone(node.args[0].step_ms)
+        self.assertEqual(node.args[0].range_ms, 3_600_000)
+
+    def test_metric_names_may_contain_colons(self):
+        node = promql.parse("node:node_cpu:rate5m")
+        self.assertIsInstance(node, promql.Selector)
+        self.assertEqual(node.metric, "node:node_cpu:rate5m")
+
+    def test_range_selector_still_requires_a_selector(self):
+        with self.assertRaises(promql.ParseError):
+            promql.parse("sum(up)[5m]")
+
+    def test_count_over_time_over_a_subquery(self):
+        # up is sampled every 15 s, so a 5 minute subquery at 1 minute resolution
+        # has six evaluation instants and every one of them has data
+        res = self.q("count_over_time(up{job=\"api\"}[5m:1m])")
+        self.assertEqual(len(res["result"]), 1)
+        self.assertEqual(float(res["result"][0]["value"][1]), 6.0)
+        # a window that reaches past the start of the fixture only counts the
+        # instants that actually have a sample
+        longer = self.q("count_over_time(up{job=\"api\"}[10m:1m])")
+        self.assertEqual(float(longer["result"][0]["value"][1]), 8.0)
+
+    def test_default_resolution_matches_an_explicit_step(self):
+        implicit = self.q("count_over_time(up{job=\"api\"}[10m:])")
+        explicit = self.q("count_over_time(up{job=\"api\"}[10m:1m])")
+        self.assertEqual(
+            float(implicit["result"][0]["value"][1]),
+            float(explicit["result"][0]["value"][1]),
+        )
+
+    def test_aggregation_feeds_a_range_function(self):
+        # sum(rate(...)) is a rate per series, so max_over_time must pick the largest
+        # instantaneous value seen inside the window rather than the value at the instant
+        single = self.q("sum(rate(http_requests_total[1m]))")
+        windowed = self.q("max_over_time(sum(rate(http_requests_total[1m]))[10m:1m])")
+        instant = float(single["result"][0]["value"][1])
+        peak = float(windowed["result"][0]["value"][1])
+        self.assertGreater(peak, 0.0)
+        # counters climb in this fixture, so the newest instant is the peak
+        self.assertAlmostEqual(peak, instant, places=6)
+
+    def test_min_over_time_over_a_subquery_sees_the_past(self):
+        # the counter rises monotonically, so the oldest point in the window has the
+        # lowest rate: this only passes if the subquery actually looks back in time
+        peak = self.q("max_over_time(sum(rate(http_requests_total[1m]))[10m:1m])")
+        trough = self.q("min_over_time(sum(rate(http_requests_total[1m]))[10m:1m])")
+        self.assertLess(float(trough["result"][0]["value"][1]), float(peak["result"][0]["value"][1]))
+
+    def test_subquery_with_offset(self):
+        recent = self.q("count_over_time(up{job=\"api\"}[5m:])")
+        self.assertEqual(float(recent["result"][0]["value"][1]), 6.0)
+        # 30 minutes back is before the fixture starts, so nothing is in range
+        old = self.q("count_over_time(up{job=\"api\"}[10m:] offset 30m)")
+        self.assertEqual(old["result"], [])
+
+    def test_subquery_inside_a_range_query(self):
+        res = promql.query_range("max_over_time(sum(rate(http_requests_total[1m]))[10m:1m])",
+                                 (self.now - 120) * 1000, self.now * 1000, 60_000)
+        self.assertEqual(len(res["result"]), 1)
+        self.assertEqual(len(res["result"][0]["values"]), 3)
+        values = [float(v) for _, v in res["result"][0]["values"]]
+        self.assertTrue(all(v > 0 for v in values), values)
+
+    def test_subquery_keeps_all_labels(self):
+        res = self.q("max_over_time(up[5m:1m])")
+        jobs = sorted(s["metric"].get("job") for s in res["result"])
+        self.assertEqual(jobs, ["api", "db"])
+        api = [s for s in res["result"] if s["metric"]["job"] == "api"][0]
+        self.assertEqual(api["metric"]["instance"], "a:1")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,31 @@ Base URL: `http://localhost:8787`.
 
 ---
 
+## Authentication
+
+Off by default. A server started with `--auth-token` or `--auth-user/--auth-password` (or the
+`CRAFT_AUTH_TOKEN` / `CRAFT_AUTH_USER` / `CRAFT_AUTH_PASSWORD` variables) requires a credential on
+every `/api/*` and `/metrics` request. The static SPA stays readable so the browser can render the
+sign-in form.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN"  http://localhost:8787/api/stats
+curl -u ops:secret                     http://localhost:8787/api/stats
+curl "$API/api/stats?token=$TOKEN"     # convenience for scrape configs and scripts
+```
+
+Failures return `401` with a `WWW-Authenticate` challenge; after 10 failures inside a minute from
+the same client the answer is `429` until a request succeeds. Comparison is constant-time.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/auth/status` | `{enabled, method, ok}`; `method` is `token`, `basic`, `token+basic` or `none`. `ok` reflects the credential you sent. |
+| POST | `/api/auth/login` | Body `{token}` or `{user, password}` → `{ok, method, credential}`. The credential is the exact header value to replay; it is not a session. |
+
+`/api/health`, `/api/status/health`, `/api/auth/status` and `/api/auth/login` are always public, so
+health checks keep working behind the lock. TLS is terminated by the server itself — see
+[`CLI.md`](CLI.md#serve).
+
 ## Health and meta
 
 | Method | Path | Returns |
@@ -211,5 +236,6 @@ curl -sX POST localhost:8787/api/loadtests -H 'Content-Type: application/json' \
 ## Static and SPA
 
 `GET /`, `GET /index.html`, and any non-`/api/` path serve the console from `craft/web/`. Unknown paths
-fall back to `index.html` so hash routes and deep links work. There is no auth layer: bind to
-localhost, or terminate TLS and auth in front of it.
+fall back to `index.html` so hash routes and deep links work. Static files are always public —
+that is what makes the in-page sign-in form possible when auth is enabled — and TLS, when
+configured, is terminated by the server itself.

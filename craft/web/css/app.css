@@ -463,6 +463,21 @@ kbd { font-family: var(--mono); }
 .gap6 { gap: 6px; } .gap4 { gap: 4px; }
 .mt8 { margin-top: 8px; } .mt14 { margin-top: 14px; } .mb8 { margin-bottom: 8px; } .mb14 { margin-bottom: 14px; }
 
+/* ---- sign-in gate (only shown when the server enables auth) ---- */
+.auth-overlay {
+  position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: radial-gradient(90% 60% at 50% 0%, #12171a 0%, var(--bg) 70%);
+}
+.auth-card {
+  width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 10px;
+  padding: 22px; border-radius: var(--radius); border: 1px solid var(--line);
+  background: var(--panel); box-shadow: var(--shadow);
+}
+.auth-brand { font-size: 16px; font-weight: 600; letter-spacing: -0.2px; }
+.auth-brand span { color: var(--accent); }
+.auth-card .btn.primary { width: 100%; justify-content: center; height: 32px; }
+.auth-card .input { font-family: var(--mono); }
+
 @media (max-width: 860px) {
   .rail { width: 58px; flex-basis: 58px; padding: 12px 6px; }
   .rail-link span, .brand-word, .rail-group { display: none; }

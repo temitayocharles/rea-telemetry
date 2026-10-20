@@ -51,8 +51,8 @@ TOKEN_RE = re.compile(
   | (?P<duration>\d+(?:\.\d+)?(?:ms|s|m|h|d|w|y)(?:\d+(?:\.\d+)?(?:ms|s|m|h|d|w|y))*)
   | (?P<number>\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\.\d+)
   | (?P<string>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')
-  | (?P<op>==|!=|=~|!~|<=|>=|\+|-|\*|/|%|\^|==|!=|<|>|=|,|\(|\)|\{|\}|\[|\]|@)
-  | (?P<ident>[a-zA-Z_:][a-zA-Z0-9_:]*)
+  | (?P<op>==|!=|=~|!~|<=|>=|\+|-|\*|/|%|\^|==|!=|<|>|=|,|\(|\)|\{|\}|\[|\]|@|:)
+  | (?P<ident>[a-zA-Z_][a-zA-Z0-9_]*)
     """,
     re.VERBOSE,
 )
@@ -66,6 +66,40 @@ class Token:
 
     def __repr__(self):
         return f"Token({self.kind},{self.value!r})"
+
+
+def _merge_colon_names(tokens: list[Token]) -> list[Token]:
+    """Re-join metric names that contain colons (`node:node_cpu:rate5m`).
+
+    A lone `:` is a real token — it separates the range from the resolution in
+    a subquery (`[5m:1m]`) — so colons are lexed separately and only glued back
+    when they sit between two identifier fragments with no whitespace.
+    """
+    out: list[Token] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok.kind == "ident" or (tok.kind == "op" and tok.value == ":"):
+            name = tok.value if tok.kind == "ident" else ""
+            start = tok.pos
+            end = tok.pos + len(tok.value)
+            j = i
+            while j + 2 < n:
+                colon, after = tokens[j + 1], tokens[j + 2]
+                glued = colon.kind == "op" and colon.value == ":" and colon.pos == end
+                if glued and after.kind == "ident" and after.pos == colon.pos + 1:
+                    name += ":" + after.value
+                    end = after.pos + len(after.value)
+                    j += 2
+                    continue
+                break
+            if name:
+                out.append(Token("ident", name, start))
+                i = j + 1
+                continue
+        out.append(tok)
+        i += 1
+    return out
 
 
 def lex(src: str) -> list[Token]:
@@ -84,7 +118,7 @@ def lex(src: str) -> list[Token]:
             tokens.append(Token(kind, value, i))
         i = m.end()
     tokens.append(Token("eof", "", n))
-    return tokens
+    return _merge_colon_names(tokens)
 
 
 def parse_duration(text: str) -> int:
@@ -123,6 +157,18 @@ class Selector(Node):
     def __init__(self, metric, matchers, range_ms=None, offset_ms=0, at_ms=None):
         self.metric, self.matchers = metric, matchers
         self.range_ms, self.offset_ms, self.at_ms = range_ms, offset_ms, at_ms
+
+
+class Subquery(Node):
+    """`expr[range:step]` — evaluate `expr` on a grid inside a range.
+
+    Used to feed aggregations into range functions, e.g.
+    `rate(sum(rate(http_requests_total[1m]))[5m:15s])`.
+    """
+
+    def __init__(self, expr, range_ms, step_ms=None, offset_ms=0, at_ms=None):
+        self.expr, self.range_ms, self.step_ms = expr, range_ms, step_ms
+        self.offset_ms, self.at_ms = offset_ms, at_ms
 
 
 class Unary(Node):
@@ -266,22 +312,34 @@ class Parser:
         # selector suffixes
         while True:
             tok = self.peek()
-            if tok.value == "[" and isinstance(node, Selector):
+            if tok.value == "[":
                 self.next()
                 dur = self.expect_kind("duration").value
-                self.expect("]")
-                node.range_ms = parse_duration(dur)
+                if self.peek().value == ":":  # subquery, not a range selector
+                    self.next()
+                    step = None
+                    if self.peek().kind == "duration":
+                        step = parse_duration(self.next().value)
+                    self.expect("]")
+                    node = Subquery(node, parse_duration(dur), step)
+                else:
+                    self.expect("]")
+                    if not isinstance(node, Selector):
+                        raise ParseError("a range selector only applies to a metric selector")
+                    node.range_ms = parse_duration(dur)
             elif tok.value in ("offset",):
                 self.next()
                 sign = 1
                 if self.peek().value in ("-", "+"):
                     sign = -1 if self.next().value == "-" else 1
                 dur = self.expect_kind("duration").value
-                if not isinstance(node, Selector):
-                    raise ParseError("offset requires a selector")
+                if not isinstance(node, (Selector, Subquery)):
+                    raise ParseError("offset requires a selector or a subquery")
                 node.offset_ms = sign * parse_duration(dur)
             elif tok.value == "@":
                 self.next()
+                if not isinstance(node, (Selector, Subquery)):
+                    raise ParseError("@ requires a selector or a subquery")
                 if self.peek().value == "start()" or (self.peek().value == "start" and self.peek(1).value == "("):
                     self.i += 3
                     node.at_ms = -1
@@ -406,9 +464,14 @@ class EvalContext:
     every step so the series list and each selector's sample window are read
     from SQLite once instead of once per step."""
 
-    def __init__(self, eval_ms, start_ms, end_ms, step_ms, cache=None):
+    def __init__(self, eval_ms, start_ms, end_ms, step_ms, cache=None, cover=None):
         self.eval_ms, self.start_ms, self.end_ms, self.step_ms = eval_ms, start_ms, end_ms, step_ms
         self.cache = cache
+        # The window a prefetch is allowed to read. For range queries this is the
+        # whole query range (so every step shares one SQL read); for an instant
+        # query it is widened by the expression's maximum lookback, which is what
+        # makes subqueries see data older than the evaluation instant.
+        self.cover = cover or (start_ms, end_ms)
 
 
 _series_cache = {"stamp": None, "rows": []}
@@ -496,15 +559,16 @@ def _resolve_time(node_ctx_ms: int, at_ms, start_ms, end_ms) -> int:
 def _prefetched(sel: Selector, ctx: EvalContext):
     """Read one selector's whole window once, so a range query does not hit
     SQLite once per step. Returns (meta_by_id, {sid: (ts_list, value_list)})."""
-    key = ("window", _selector_key(sel.metric, sel.matchers), sel.offset_ms, sel.range_ms or 0)
+    cover_start, cover_end = ctx.cover
+    key = ("window", _selector_key(sel.metric, sel.matchers), sel.offset_ms, sel.range_ms or 0, cover_start, cover_end)
     hit = ctx.cache.get(key)
     if hit is not None:
         return hit
     series_meta = select_series(sel.metric, sel.matchers, ctx.cache)
     meta_by_id = {s["id"]: s for s in series_meta}
     rng = sel.range_ms or 0
-    first = _resolve_time(ctx.start_ms, sel.at_ms, ctx.start_ms, ctx.end_ms) - sel.offset_ms - rng
-    last = _resolve_time(ctx.end_ms, sel.at_ms, ctx.start_ms, ctx.end_ms) - sel.offset_ms
+    first = _resolve_time(cover_start, sel.at_ms, ctx.start_ms, ctx.end_ms) - sel.offset_ms - rng
+    last = _resolve_time(cover_end, sel.at_ms, ctx.start_ms, ctx.end_ms) - sel.offset_ms
     data = read_samples(meta_by_id.keys(), int(first // 1000), int(last // 1000) + 1)
     packed = {}
     for sid, values in data.items():
@@ -673,12 +737,11 @@ def call_function(node: Call, ctx: EvalContext):
     }
     if name in range_fns:
         arg = node.args[0] if name == "predict_linear" and len(node.args) > 1 else node.args[-1]
-        if not isinstance(arg, Selector) or not arg.range_ms:
-            raise ParseError(f"{name} requires a range selector, e.g. {name}(metric[5m])")
-        series = eval_selector(arg, ctx, want_matrix=True)
+        series, range_ms = _range_vector(arg, ctx)
+        offset_ms = getattr(arg, "offset_ms", 0) or 0
         out = []
         for s in series:
-            values = [(t, v) for t, v in s.values if t <= ctx.eval_ms - arg.offset_ms]
+            values = [(t, v) for t, v in s.values if t <= ctx.eval_ms - offset_ms]
             if not values:
                 continue
             if name == "quantile_over_time":
@@ -691,7 +754,7 @@ def call_function(node: Call, ctx: EvalContext):
             elif name == "absent_over_time":
                 continue
             else:
-                val = _rate_like(values, arg.range_ms or 1, name)
+                val = _rate_like(values, range_ms or 1, name)
             if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
                 continue
             out.append(Sample(dict(s.labels), float(val)))
@@ -873,6 +936,67 @@ def eval_scalar(node, ctx) -> float:
     raise ParseError("expected scalar")
 
 
+DEFAULT_SUBQUERY_STEP_MS = 60_000
+
+
+def lookback_span(node) -> int:
+    """How far back an expression can reach, so an instant query can prefetch it."""
+    if isinstance(node, Selector):
+        return (node.range_ms or LOOKBACK_MS) + abs(node.offset_ms or 0)
+    if isinstance(node, Subquery):
+        return node.range_ms + abs(node.offset_ms or 0) + lookback_span(node.expr)
+    children = []
+    for attr in ("expr", "lhs", "rhs", "param"):
+        child = getattr(node, attr, None)
+        if child is not None:
+            children.append(child)
+    children.extend(getattr(node, "args", []) or [])
+    return max((lookback_span(c) for c in children), default=LOOKBACK_MS)
+
+
+def eval_subquery(node: Subquery, ctx) -> list[Series]:
+    """Evaluate `expr[range:step]` into a range vector.
+
+    The inner expression is evaluated once per step, which is the same thing
+    Prometheus does; the cost is (range / step) evaluations, so the default
+    resolution is the outer query step and never finer than a minute.
+    """
+    base = _resolve_time(ctx.eval_ms, node.at_ms, ctx.start_ms, ctx.end_ms) - node.offset_ms
+    step = node.step_ms or max(int(ctx.step_ms or 0), DEFAULT_SUBQUERY_STEP_MS)
+    step = max(int(step), 1000)
+    start = base - node.range_ms
+    stamps = list(range(start, base + 1, step))
+    if not stamps:
+        stamps = [base]
+    merged: dict[tuple, tuple[dict, list]] = {}
+    for t in stamps:
+        inner = EvalContext(t, ctx.start_ms, ctx.end_ms, step, ctx.cache, ctx.cover)
+        result = eval_expr(node.expr, inner)
+        if isinstance(result, (int, float)):
+            result = [Sample({}, float(result))]
+        for sample in result:
+            key = tuple(sorted(sample.labels.items()))
+            entry = merged.setdefault(key, (sample.labels, []))
+            entry[1].append((t, sample.value))
+    out = []
+    for labels, values in merged.values():
+        values = [(t, v) for t, v in values if t <= base]
+        if values:
+            out.append(Series(dict(labels), values))
+    return out
+
+
+def _range_vector(arg, ctx) -> tuple[list, int]:
+    """Return (series, range_ms) for a range function argument."""
+    if isinstance(arg, Selector):
+        if not arg.range_ms:
+            raise ParseError("expected a range selector, e.g. metric[5m]")
+        return eval_selector(arg, ctx, want_matrix=True), arg.range_ms
+    if isinstance(arg, Subquery):
+        return eval_subquery(arg, ctx), arg.range_ms
+    raise ParseError("expected a range selector or a subquery, e.g. metric[5m] or expr[5m:1m]")
+
+
 def eval_expr(node, ctx):
     if isinstance(node, Number):
         return node.v
@@ -880,6 +1004,9 @@ def eval_expr(node, ctx):
         return node.v
     if isinstance(node, Selector):
         return eval_selector(node, ctx, want_matrix=False)
+    if isinstance(node, Subquery):
+        # at the top level a subquery behaves like an instant vector of its last point
+        return [Sample(dict(s.labels), s.values[-1][1]) for s in eval_subquery(node, ctx)]
     if isinstance(node, Unary):
         v = eval_expr(node.expr, ctx)
         if isinstance(v, (int, float)):
@@ -1083,7 +1210,8 @@ def to_api(result, result_type=None):
 
 def query_instant(expr: str, time_ms: int):
     ast = parse(expr)
-    ctx = EvalContext(time_ms, time_ms, time_ms, 0)
+    span = lookback_span(ast)
+    ctx = EvalContext(time_ms, time_ms, time_ms, 0, None, (time_ms - span, time_ms))
     result = eval_expr(ast, ctx)
     if isinstance(result, (int, float)):
         return {"resultType": "scalar", "result": [time_ms / 1000.0, _fmt_value(float(result))]}

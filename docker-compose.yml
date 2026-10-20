@@ -8,6 +8,9 @@ services:
       CRAFT_DB: /data/telemetry.db
       CRAFT_RETENTION_DAYS: "30"
       CRAFT_AUTOSEED: "1"
+      # CRAFT_AUTH_TOKEN: "paste-a-long-random-string"   # enables the sign-in gate
+      # CRAFT_TLS_CERT: /data/cert.pem                    # mount cert.pem + key.pem into /data
+      # CRAFT_TLS_KEY: /data/key.pem
     volumes:
       - craft-data:/data
     restart: unless-stopped

@@ -1,10 +1,29 @@
-// Thin API client. Same-origin, no auth (local-first), JSON everywhere.
+// Thin API client. Same-origin and JSON everywhere; the credential, when the
+// server requires one, is a header kept in localStorage.
 import { toast } from "./ui.js";
+
+const CRED_KEY = "craft.credential";
+
+export const auth = {
+  credential: () => localStorage.getItem(CRED_KEY) || "",
+  set: (value) => {
+    if (value) localStorage.setItem(CRED_KEY, value);
+    else localStorage.removeItem(CRED_KEY);
+  },
+  clear: () => localStorage.removeItem(CRED_KEY),
+};
+
+function headers() {
+  const out = { "Content-Type": "application/json" };
+  const credential = auth.credential();
+  if (credential) out.Authorization = credential;
+  return out;
+}
 
 async function request(path, options = {}) {
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers: { ...headers(), ...(options.headers || {}) },
     body: options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body,
   });
   const text = await res.text();
@@ -12,7 +31,12 @@ async function request(path, options = {}) {
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
     const message = (data && data.error) || `${res.status} ${res.statusText}`;
-    if (!options.silent) toast(message, "err");
+    if (res.status === 401) {
+      // let the shell decide to show the login screen instead of a toast storm
+      window.dispatchEvent(new CustomEvent("craft:auth-required", { detail: { credential: auth.credential() } }));
+    } else if (!options.silent) {
+      toast(message, "err");
+    }
     const err = new Error(message);
     err.status = res.status;
     throw err;
@@ -122,6 +146,10 @@ export const api = {
   searches: () => request("/api/searches"),
   saveSearch: (body) => request("/api/searches", { method: "POST", body }),
   deleteSearch: (id) => request(`/api/searches/${id}`, { method: "DELETE" }),
+
+  // Auth
+  authStatus: () => request("/api/auth/status", { silent: true }),
+  login: (body) => request("/api/auth/login", { method: "POST", body, silent: true }),
 
   // Misc
   search: (q) => request(`/api/search${qs({ q })}`),

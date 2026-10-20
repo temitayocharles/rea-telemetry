@@ -74,6 +74,20 @@ telemetrycraft serve --port 8787
 docker compose up --build       # http://localhost:8787, data in a named volume
 ```
 
+### Put a lock on it
+
+Auth and TLS are off by default — the default deployment is your laptop. Turn them on with flags
+or environment variables; nothing else changes.
+
+```bash
+export CRAFT_AUTH_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+python3 -m craft serve --tls-cert cert.pem --tls-key key.pem
+# https://localhost:8787 asks for the token once, then keeps it in this browser
+```
+
+`--auth-user`/`--auth-password` gives you HTTP basic instead, and `--tls-client-ca` demands client
+certificates. Details in [`docs/CLI.md`](docs/CLI.md#serve) and [`docs/API.md`](docs/API.md#authentication).
+
 ---
 
 ## Send it your own telemetry
@@ -117,6 +131,7 @@ Everything the UI does is available headlessly:
 craft status
 craft query 'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))'
 craft query 'sum(rate(http_requests_total[5m])) by (service)' --range 6h
+craft query 'max_over_time(sum(rate(http_requests_total[5m]))[15m:1m])'   # subquery
 craft logs '{service="checkout-service"} |~ "(?i)timeout"' --since 2h
 craft traces --service payment-service --min-duration 500
 craft traces aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa          # waterfall
@@ -186,11 +201,12 @@ to be:
 - Not horizontally scalable. One process, one file, ~640k samples of demo data. Good to a few
   million samples and a handful of concurrent users; beyond that, use the real tools.
 - Not a drop-in Prometheus replacement for federation, remote read, or recording rules.
-- PromQL covers the practical language, not every corner (`@ start()/end()` are parsed and
-  handled, subqueries are not).
+- PromQL covers the practical language, not every corner (`@ start()/end()` and subqueries like
+  `[15m:1m]` work; recording rules do not).
 - LogQL covers stream selection and filtering, not full metric-query composition over logs.
 - OTLP is the JSON encoding; protobuf needs a decoder and is not included.
-- No authentication. Run it on localhost or behind your own proxy.
+- One token or one user/password — no user database, no roles, no OIDC. Enough to keep a shared box
+  off the open network; not a replacement for an identity provider.
 
 The value is that you can read the whole thing in an afternoon, run it on a laptop, and still
 have dashboards, alerts, traces, error tracking, and error budgets.
@@ -200,7 +216,7 @@ have dashboards, alerts, traces, error tracking, and error budgets.
 ## Development
 
 ```bash
-make test      # 56 tests, stdlib unittest, no pytest required
+make test      # 88 tests, stdlib unittest, no pytest required
 make run       # server with demo data
 make seed      # regenerate demo data
 make docker

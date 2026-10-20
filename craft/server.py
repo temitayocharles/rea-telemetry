@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import json
 import mimetypes
@@ -13,9 +14,10 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import alerting, db, dashboards, incidents, loadtest, promql, query, seed, slo, store, synthetics
+from . import alerting, auth as authmod, db, dashboards, incidents, loadtest, promql, query, seed, slo, store, synthetics
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+AUTH = authmod.Auth.from_env()
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 VERSION = "1.0.0"
 STARTED = db.now()
@@ -142,6 +144,22 @@ class Handler(SimpleHTTPRequestHandler):
             if method in ("GET", "HEAD"):
                 return self.serve_static(path)
             return self.error("not found", 404)
+        client = self.client_address[0] if self.client_address else "?"
+        if method != "OPTIONS":
+            try:
+                AUTH.check(self.headers, path, params)
+            except authmod.AuthError as exc:
+                AUTH.note_failure(client)
+                if AUTH.throttle(client):
+                    return self.error("too many failed authentication attempts", 429)
+                return self._send(
+                    401,
+                    json.dumps({"error": str(exc), "status": 401}).encode(),
+                    extra={"WWW-Authenticate": f'{exc.challenge} realm="TelemetryCraft"'},
+                )
+            if AUTH.enabled and AUTH.accepts(self.headers, params):
+                # a good credential clears the lockout counter for this client
+                AUTH.note_success(client)
         try:
             result = route(method, path, params, self)
         except ValueError as exc:
@@ -154,7 +172,11 @@ class Handler(SimpleHTTPRequestHandler):
             return self.error(f"{type(exc).__name__}: {exc}", 500)
         if result is None:
             return self.error("not found", 404)
-        data, code, ctype = result if isinstance(result, tuple) else (result, 200, "application/json; charset=utf-8")
+        if isinstance(result, tuple):
+            data, code = result[0], result[1]
+            ctype = result[2] if len(result) > 2 else "application/json; charset=utf-8"
+        else:
+            data, code, ctype = result, 200, "application/json; charset=utf-8"
         if isinstance(data, bytes):
             return self._send(code, data, ctype)
         return self.json(data, code)
@@ -186,6 +208,30 @@ def route(method, path, params, h):
     if path == "/api/status/echo":
         path_echo = params.get("path", ["/"])[0]
         return {"ok": True, "path": path_echo, "region": params.get("region", ["iad"])[0], "ts": db.now()}
+    if path == "/api/auth/status":
+        return AUTH.status(getattr(h, "headers", None))
+    if path == "/api/auth/login" and method == "POST":
+        body = h.read_json()
+        client = h.client_address[0] if h.client_address else "?"
+        candidate = str(body.get("token") or "")
+        if AUTH.token and AUTH.verify_token(candidate):
+            # the client keeps the credential and replays it as a header
+            AUTH.note_success(client)
+            return {"ok": True, "method": "token", "credential": f"Bearer {candidate}"}
+        if AUTH.user and AUTH.verify_basic(
+            base64.b64encode(f"{body.get('user')}:{body.get('password')}".encode()).decode()
+        ):
+            encoded = base64.b64encode(f"{body.get('user')}:{body.get('password')}".encode()).decode()
+            AUTH.note_success(client)
+            return {"ok": True, "method": "basic", "credential": f"Basic {encoded}"}
+        if not AUTH.enabled:
+            return {"ok": True, "method": "none", "credential": ""}
+        # login is public, so it counts failures itself instead of bypassing the lockout
+        AUTH.note_failure(client)
+        if AUTH.locked_out(client):
+            return {"error": "too many failed authentication attempts", "status": 429}, 429
+        return {"error": "invalid credentials", "status": 401}, 401
+
     if path == "/api/meta":
         return {
             "version": VERSION,
@@ -979,7 +1025,7 @@ class Collector:
             self.run_once()
 
 
-def serve(port: int = 8787, host: str = "0.0.0.0", autoseed: bool = True):
+def serve(port: int = 8787, host: str = "0.0.0.0", autoseed: bool = True, tls: dict | None = None):
     try:
         # default rules, plus the idempotent backfills they carry
         alerting.seed_defaults()
@@ -993,8 +1039,16 @@ def serve(port: int = 8787, host: str = "0.0.0.0", autoseed: bool = True):
     collector = Collector()
     threading.Thread(target=collector.loop, name="craft-collector", daemon=True).start()
     synthetics.start_worker()
+    tls = tls or {}
+    context = authmod.tls_context(
+        tls.get("cert", ""), tls.get("key", ""), tls.get("client_ca", "")
+    )
     httpd = CraftServer((host, port), Handler)
-    print(f"TelemetryCraft {VERSION} listening on http://{host}:{port}  (db: {db.db_path()})")
+    if context is not None:
+        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+    scheme = authmod.scheme_for(context)
+    lock = f"  auth: {AUTH.method}" if AUTH.enabled else "  auth: off"
+    print(f"TelemetryCraft {VERSION} listening on {scheme}://{host}:{port}  (db: {db.db_path()}){lock}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1004,13 +1058,37 @@ def serve(port: int = 8787, host: str = "0.0.0.0", autoseed: bool = True):
         synthetics.stop_worker()
 
 
+def _apply_auth_flags(args) -> None:
+    """CLI flags win over environment variables."""
+    global AUTH
+    if getattr(args, "auth_token", None) or getattr(args, "auth_user", None):
+        AUTH = authmod.Auth(
+            token=args.auth_token or "",
+            user=args.auth_user or "",
+            password=getattr(args, "auth_password", "") or "",
+        )
+    elif getattr(args, "no_auth", False):
+        AUTH = authmod.Auth()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="craft", description="TelemetryCraft server")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8787)))
     ap.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     ap.add_argument("--no-seed", action="store_true")
+    ap.add_argument("--auth-token", help="require this bearer token (or set CRAFT_AUTH_TOKEN)")
+    ap.add_argument("--auth-user", help="require HTTP basic auth with this user")
+    ap.add_argument("--auth-password", help="password for --auth-user")
+    ap.add_argument("--no-auth", action="store_true", help="disable auth even if the environment enables it")
+    ap.add_argument("--tls-cert", help="PEM certificate (or set CRAFT_TLS_CERT)")
+    ap.add_argument("--tls-key", help="PEM private key (or set CRAFT_TLS_KEY)")
+    ap.add_argument("--tls-client-ca", help="require client certificates signed by this CA")
     args = ap.parse_args(argv)
-    serve(args.port, args.host, autoseed=not args.no_seed)
+    if args.auth_user and not (args.auth_password or os.environ.get("CRAFT_AUTH_PASSWORD")):
+        ap.error("--auth-user needs --auth-password (or CRAFT_AUTH_PASSWORD)")
+    _apply_auth_flags(args)
+    serve(args.port, args.host, autoseed=not args.no_seed,
+          tls={"cert": args.tls_cert or "", "key": args.tls_key or "", "client_ca": args.tls_client_ca or ""})
 
 
 if __name__ == "__main__":

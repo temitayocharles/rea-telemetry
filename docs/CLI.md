@@ -13,6 +13,8 @@ Global option on every command:
 
 ```
 --db PATH        SQLite file to use (default: data/telemetry.db, or $CRAFT_DB)
+--token TOKEN    bearer token for commands that talk to a server (or $CRAFT_TOKEN);
+                 accepted before or after the subcommand
 ```
 
 Everything is offline and local except `write`, `send-log` (which POST to a running server),
@@ -27,10 +29,39 @@ with the message on stderr. `--json` output is safe to pipe into `jq`.
 
 ```bash
 craft serve [--port 8787] [--host 0.0.0.0] [--no-seed]
+            [--auth-token TOKEN | --auth-user USER --auth-password PASS] [--no-auth]
+            [--tls-cert cert.pem --tls-key key.pem [--tls-client-ca ca.pem]]
 ```
 
 Starts the HTTP API, the console, and the collector loop (alert evaluation, synthetic checks,
 retention). Seeds the demo environment on first boot unless `--no-seed`.
+
+**Auth.** `--auth-token` requires a bearer token, `--auth-user`/`--auth-password` requires HTTP
+basic auth (both may be set). The environment equivalents are `CRAFT_AUTH_TOKEN`,
+`CRAFT_AUTH_USER`, `CRAFT_AUTH_PASSWORD`; flags win. `--no-auth` disables whatever the environment
+enabled. There is no user database: one token or one user/password pair, compared in constant time,
+which is the right shape for a tool that runs on your laptop or one box. Ten failures a minute
+from a client gets `429`; a success clears the counter. The browser asks for the credential once at
+`/api/auth/login` and keeps it in `localStorage` for that origin. `/api/health`,
+`/api/status/health`, `/api/auth/status` and `/api/auth/login` stay open.
+
+```bash
+export CRAFT_AUTH_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+craft serve --port 8787
+curl -H "Authorization: Bearer $CRAFT_AUTH_TOKEN" http://localhost:8787/api/overview
+```
+
+**TLS.** `--tls-cert` plus `--tls-key` (PEM) serve HTTPS directly — no reverse proxy required, and
+no certificate is generated for you. `--tls-client-ca` additionally demands a client certificate
+signed by that CA (mTLS). TLS 1.2 is the floor. Environment: `CRAFT_TLS_CERT`, `CRAFT_TLS_KEY`,
+`CRAFT_TLS_CLIENT_CA`.
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout key.pem -out cert.pem
+craft serve --tls-cert cert.pem --tls-key key.pem --auth-token "$CRAFT_AUTH_TOKEN"
+# Server prints: TelemetryCraft 1.0.0 listening on https://0.0.0.0:8787
+```
 
 ### `seed`
 
