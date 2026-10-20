@@ -765,6 +765,10 @@ def _rebase(delta: int) -> None:
     conn.execute("UPDATE check_results SET ts = ts + ?", (delta,))
     conn.execute("UPDATE loadtest_points SET ts = ts + ?", (delta,))
     conn.execute("COMMIT")
+    try:  # a rebase rewrites the whole samples table; give the space back
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def live_tick(now: int | None = None) -> dict:
