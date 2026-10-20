@@ -1,4 +1,5 @@
 import { h, clear, panel, badge, empty, bytes, num, toast, ago, clock, modal, formField, confirmDialog, copy, initials } from "../ui.js";
+import { auth } from "../api.js";
 
 export async function render(root, ctx) {
   ctx.setTitle("Settings");
@@ -11,6 +12,7 @@ export async function render(root, ctx) {
   const retention = h("input", { class: "input", type: "number", value: retain, min: 1, max: 365 });
   const receiverHost = h("div", {});
   let receivers = [...(settings.receivers || [])];
+  const access = await ctx.api.authStatus().catch(() => ({ enabled: false, method: "none" }));
 
   const drawReceivers = () => {
     clear(receiverHost);
@@ -71,6 +73,22 @@ export async function render(root, ctx) {
             toast("Export downloaded");
           } }, "Export JSON"),
           h("button", { class: "btn", onClick: () => copy(location.origin + "/api/prom/api/v1/write") }, "Copy remote-write URL"))), { pad: true }),
+      h("div", { class: "mt14" }, panel("Access", h("div", { class: "stack" },
+        h("div", { class: "row", style: { fontSize: "12px" } },
+          h("span", { class: "muted" }, "Authentication"),
+          h("span", { class: "spacer" }),
+          access.enabled ? h("span", { class: "badge ok" }, access.method) : h("span", { class: "badge" }, "off")),
+        row("Transport", location.protocol === "https:" ? "https (TLS)" : "http"),
+        row("Credential", auth.credential() ? "stored in this browser" : "none"),
+        h("p", { class: "hint", style: { margin: 0 } },
+          access.enabled
+            ? "Set with --auth-token or --auth-user. TLS is enabled by starting the server with --tls-cert and --tls-key."
+            : "This server is open. Restart it with --auth-token or --auth-user/--auth-password to require a credential, and add --tls-cert/--tls-key for HTTPS."),
+        h("div", { class: "row", style: { gap: "6px" } },
+          h("button", { class: "btn sm", onClick: () => copy(location.origin + "/api/auth/status") }, "Copy status URL"),
+          access.enabled && auth.credential()
+            ? h("button", { class: "btn sm ghost", onClick: () => { auth.clear(); location.reload(); } }, "Sign out")
+            : null)), { pad: true })),
       h("div", { class: "mt14" }, panel("Demo data", h("div", { class: "stack" },
         h("p", { class: "sub", style: { margin: 0 } }, "The environment is generated locally: 7 days of series at two resolutions, correlated logs and traces, an active incident, synthetic history and error budgets."),
         h("div", { class: "row", style: { gap: "6px" } },

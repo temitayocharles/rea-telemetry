@@ -231,8 +231,9 @@ so scrolling mid-drag cannot desynchronise it. Charts re-render on drop so they 
   `rate` is analytically known) and asserts function, aggregation and label behaviour.
 - `test_ingest_alerting.py` exercises every ingest path, then the alert state machine, silences,
   incident promotion, retention, synthetic checks and the status page.
-- `test_grid.py` shells out to node for the layout assertions and skips when node is absent, so
-  the suite stays green on a machine with no JavaScript runtime.
+- `test_grid.py` shells out to node for the layout assertions and syntax-checks every module in
+  `craft/web/js/` (a missing paren in one view would otherwise surface only when that view loads).
+  It skips when node is absent, so the suite stays green on a machine with no JavaScript runtime.
 - `test_live.py` covers the demo continuation: appending at the recent rate, clamping gauges to
   sane ranges, rebasing after a multi-hour gap, and the disabled/no-data no-ops.
 - `test_api.py` boots a real `ThreadingHTTPServer` on an ephemeral port against a seeded temporary
