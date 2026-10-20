@@ -16,7 +16,7 @@ Base URL: `http://localhost:8787`.
 | GET | `/api/health` | `{"status":"ok","service":"telemetrycraft","version":…,"uptime_s":…}` |
 | GET | `/api/status/health` | alias of `/api/health` |
 | GET | `/api/meta` | version, org, app catalogue, seed version |
-| GET | `/api/stats` | `{series, samples, samples_1h, logs, spans, span_errors, issues, alerts_firing, db_bytes, retention_days, engine}` |
+| GET | `/api/stats` | `{series, samples, samples_1h, logs, spans, span_errors, issues, alerts_firing, alerts_pending, db_bytes, retention_days, engine}` |
 | GET | `/metrics` | Self-telemetry in Prometheus text format |
 | GET | `/api/overview` | Home-page payload: headline RED metrics, 6 h series, service table, alerts, SLOs, incidents, status |
 
