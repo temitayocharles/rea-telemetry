@@ -1,0 +1,24 @@
+services:
+  telemetrycraft:
+    build: .
+    image: telemetrycraft:1.0.0
+    ports:
+      - "8787:8787"
+    environment:
+      CRAFT_DB: /data/telemetry.db
+      CRAFT_RETENTION_DAYS: "30"
+      CRAFT_AUTOSEED: "1"
+      # CRAFT_AUTH_TOKEN: "paste-a-long-random-string"   # enables the sign-in gate
+      # CRAFT_TLS_CERT: /data/cert.pem                    # mount cert.pem + key.pem into /data
+      # CRAFT_TLS_KEY: /data/key.pem
+    volumes:
+      - craft-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8787/api/health',timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  craft-data:
